@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  green-agent:
+    build: .
+    ports:
+      - "9009:9009"
+    volumes:
+      # Mount Docker socket to control host Docker
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount project directory for building local Dockerfiles and saving logs
+      - /scr/yuan/devops-greeen-agent:/workspace
+    environment:
+      # Optional: Set host IP for SSH connections
+      # Use "localhost" for Linux, "host.docker.internal" for Docker Desktop (Mac/Windows)
+      - DOCKER_HOST_IP=${DOCKER_HOST_IP:-localhost}
+    restart: unless-stopped
+    networks:
+      - agent-network
+
+networks:
+  agent-network:
+    driver: bridge

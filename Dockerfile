@@ -1,6 +1,16 @@
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm
 
-RUN adduser agent
+# Install Docker CLI (needed to communicate with host Docker)
+RUN apt-get update && \
+    apt-get install -y docker.io && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create agent user and add to host's docker group (GID 999)
+# Also add to container's docker group for compatibility
+RUN adduser agent && \
+    usermod -aG docker agent && \
+    usermod -aG 999 agent
+
 USER agent
 WORKDIR /home/agent
 
