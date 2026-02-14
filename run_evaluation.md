@@ -51,3 +51,17 @@ Run tests against the agent:
 # Run tests
 uv run pytest --agent-url http://localhost:9009
 ```
+
+
+## Install claude code
+```
+apt-get update && apt-get install -y curl
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
+export NVM_DIR="$HOME/.nvm" && \. "$NVM_DIR/nvm.sh"
+nvm install 22
+npm install -g @anthropic-ai/claude-code@latest
+
+export ANTHROPIC_API_KEY="your-api-key-here"
+
+claude -p "Fix the undefined variable error in main.py"
+```
