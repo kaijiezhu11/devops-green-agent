@@ -49,21 +49,10 @@ async def start_containerd_task():
         print(result["response"])
         print("=" * 60 + "\n")
         
-        # Auto-copy trigger test script to container
-        import subprocess
-        import os
-        
-        print("Copying trigger test script...")
-        script_path = os.path.join(os.path.dirname(__file__), "trigger_test_simple.py")
-        copy_cmd = f"docker cp {script_path} containerd__containerd-4847:/trigger_test.py"
-        subprocess.run(copy_cmd, shell=True, check=True, capture_output=True)
-        print("trigger_test.py copied to container\n")
-        
         print("Next steps:")
         print("1. SSH into container (use ssh_command above)")
         print("2. (Optional) Apply solution: bash /solution.sh")
         print("3. Trigger test: python3 /trigger_test.py")
-        print("4. Check logs: ls -lh /scr/yuan/devops-greeen-agent/test_log_*")
         
     except Exception as e:
         print(f"Error: {e}")

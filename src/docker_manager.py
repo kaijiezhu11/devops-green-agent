@@ -342,41 +342,12 @@ if __name__ == "__main__":
     
     def _get_host_ip(self) -> str:
         """
-        Get the host IP address from inside the container.
+        Get the host IP address for SSH access.
         
         Returns:
             Host IP address as string
         """
-        # Try to read from environment variable first
-        host_ip = os.getenv("DOCKER_HOST_IP")
-        if host_ip:
-            return host_ip
-        
-        # Default to common values
-        # In Docker Desktop: host.docker.internal
-        # In Linux: usually the gateway IP
-        try:
-            # Try to get the gateway IP (works on Linux)
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.connect(("8.8.8.8", 80))
-            gateway_ip = sock.getsockname()[0]
-            sock.close()
-            
-            # The gateway is usually the host
-            # Get the network gateway from the route
-            with open("/proc/net/route") as f:
-                for line in f.readlines()[1:]:
-                    fields = line.strip().split()
-                    if fields[1] == "00000000":  # Default route
-                        gateway = int(fields[2], 16)
-                        return socket.inet_ntoa(
-                            gateway.to_bytes(4, byteorder="little")
-                        )
-        except Exception:
-            pass
-        
-        # Fallback
+        # Use localhost for SSH since ports are mapped to host
         return "localhost"
     
     def stop_container(self, container_name: str) -> bool:

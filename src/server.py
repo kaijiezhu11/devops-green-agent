@@ -1,4 +1,5 @@
 import argparse
+import os
 import uvicorn
 
 from a2a.server.apps import A2AStarletteApplication
@@ -19,6 +20,9 @@ def main():
     parser.add_argument("--port", type=int, default=9009, help="Port to bind the server")
     parser.add_argument("--card-url", type=str, help="URL to advertise in the agent card")
     args = parser.parse_args()
+    
+    # Allow AGENT_CARD_URL environment variable to override card-url
+    card_url_override = args.card_url or os.getenv("AGENT_CARD_URL")
 
     # Agent card configuration
     # See: https://a2a-protocol.org/latest/tutorials/python/3-agent-skills-and-card/
@@ -35,10 +39,14 @@ def main():
         ]
     )
 
+    # Determine the URL to advertise
+    # If host is 0.0.0.0 (bind all interfaces), use localhost for the card URL
+    card_host = "localhost" if args.host == "0.0.0.0" else args.host
+    
     agent_card = AgentCard(
         name="DevOps Green Agent",
         description="A green agent that can start and manage Docker containers on the host machine, providing SSH access for task execution and evaluation",
-        url=args.card_url or f"http://{args.host}:{args.port}/",
+        url=card_url_override or f"http://{card_host}:{args.port}/",
         version='1.0.0',
         default_input_modes=['text'],
         default_output_modes=['text'],

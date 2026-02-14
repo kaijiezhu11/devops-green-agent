@@ -79,24 +79,30 @@ class Agent:
         """
         input_text = get_message_text(message)
 
+        # Try to parse as EvalRequest JSON, fallback to simple echo
         try:
             request: EvalRequest = EvalRequest.model_validate_json(input_text)
             ok, msg = self.validate_request(request)
             if not ok:
                 await updater.reject(new_agent_text_message(msg))
                 return
+                
+            # Check request type
+            if "task_config" in request.config:
+                await self._handle_container_task(request, updater)
+            elif "run_test" in request.config:
+                await self._handle_run_test(request, updater)
+            else:
+                # Default evaluation logic
+                await self._handle_evaluation(request, updater)
+                
         except ValidationError as e:
-            await updater.reject(new_agent_text_message(f"Invalid request: {e}"))
-            return
-
-        # Check request type
-        if "task_config" in request.config:
-            await self._handle_container_task(request, updater)
-        elif "run_test" in request.config:
-            await self._handle_run_test(request, updater)
-        else:
-            # Default evaluation logic
-            await self._handle_evaluation(request, updater)
+            # Not a valid EvalRequest - treat as simple message for testing
+            logger.info(f"Received simple message (not EvalRequest): {input_text[:100]}")
+            await updater.add_artifact(
+                parts=[Part(root=TextPart(text=f"Echo: {input_text}"))],
+                name="Response"
+            )
     
     async def _handle_container_task(
         self, request: EvalRequest, updater: TaskUpdater

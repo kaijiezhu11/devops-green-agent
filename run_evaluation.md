@@ -1,27 +1,53 @@
-# Create a container that contains the green agent
+# Running Evaluation
+
+## Quick Start
+
+### 1. Install dependencies
+```bash
+uv sync
 ```
-cd /scr/yuan/devops-greeen-agent
-docker compose build --no-cache
+
+### 2. Run the server
+
+With Docker:
+```bash
 docker compose up -d
 ```
 
-# Ask the green agent to create a task container
+Or locally (requires Docker socket access):
+```bash
+uv run python src/server.py --host 0.0.0.0
 ```
-docker rm -f containerd__containerd-4847
+
+### 3. Create a task container
+```bash
 uv run python start_containerd_task.py
 ```
-This will give you a ssh command
 
-# Imagine you are the purple agent
-```
-ssh -p <port from the previous command> root@localhost
+This outputs an SSH command like: `ssh -p 34290 root@localhost`
 
-# optional: copy paste the content under containerd__containerd-4847/solution.sh to the container and run the solution
+### 4. Connect to task container
+```bash
+ssh -p <port> root@localhost
+
+# Optional: Apply solution
+bash /solution.sh
 ```
 
-# Send finish signal
-```
-# Inside the task container
+### 5. Trigger test execution
+Inside the task container:
+```bash
 python3 /trigger_test.py
 ```
-You can exit the container immediately after sending the signal. After a few seconds a log file that reports the test result will be created here.
+
+Exit the container. Test logs appear in `./test_log_*.txt`.
+
+## Testing
+
+Run tests against the agent:
+```bash
+# Start the agent first (see above)
+
+# Run tests
+uv run pytest --agent-url http://localhost:9009
+```
