@@ -46,6 +46,9 @@ class DockerManager:
             if not ssh_pubkey:
                 ssh_pubkey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID3nu+sajUcas+4SlXZrKydnvtu2oT9NGMnsnk1J59ty aa3101132006@gmail.com"
             
+            # Get container's working directory
+            workdir = self._get_container_workdir(container)
+            
             # Install and configure SSH server
             setup_script = f"""#!/bin/bash
 set -e
@@ -57,8 +60,8 @@ echo "{ssh_pubkey}" > /root/.ssh/authorized_keys
 chmod 600 /root/.ssh/authorized_keys
 sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-# Set default directory to /home/containerd when SSH login
-echo 'cd /home/containerd 2>/dev/null || true' >> /root/.bashrc
+# Set default directory to container's WORKDIR when SSH login
+echo 'cd {workdir} 2>/dev/null || cd /root' >> /root/.bashrc
 /usr/sbin/sshd
 echo "SSH setup complete"
 """
@@ -71,7 +74,7 @@ echo "SSH setup complete"
             )
             
             if result.exit_code == 0:
-                logger.info(f"SSH configured successfully in {container.name}")
+                logger.info(f"SSH configured successfully in {container.name}, default dir: {workdir}")
                 return True
             else:
                 logger.error(f"SSH setup failed: {result.output.decode()}")
@@ -86,6 +89,7 @@ echo "SSH setup complete"
         path: str,
         tag: str,
         dockerfile: str = "Dockerfile",
+        nocache: bool = False,
     ) -> str:
         """
         Build a Docker image from a Dockerfile.
@@ -94,6 +98,7 @@ echo "SSH setup complete"
             path: Build context path (relative to /workspace in container)
             tag: Tag for the built image
             dockerfile: Dockerfile name (default: "Dockerfile")
+            nocache: If True, build without using cache
         
         Returns:
             Image ID
@@ -104,6 +109,8 @@ echo "SSH setup complete"
             
             logger.info(f"Building image from {build_path}/{dockerfile}")
             logger.info(f"Tag: {tag}")
+            if nocache:
+                logger.info("Building WITHOUT cache (--no-cache)")
             
             # Build the image
             image, build_logs = self.client.images.build(
@@ -112,6 +119,7 @@ echo "SSH setup complete"
                 tag=tag,
                 rm=True,  # Remove intermediate containers
                 forcerm=True,  # Always remove intermediate containers
+                nocache=nocache,  # Disable cache if requested
             )
             
             # Log build output
@@ -136,6 +144,7 @@ echo "SSH setup complete"
         network: Optional[str] = None,
         build_context: Optional[str] = None,
         dockerfile: Optional[str] = None,
+        nocache: bool = False,
     ) -> tuple[Container, str]:
         """
         Start a new task container on the host.
@@ -149,11 +158,38 @@ echo "SSH setup complete"
             network: Optional network name
             build_context: Optional path to build context (triggers local build)
             dockerfile: Optional Dockerfile name (default: "Dockerfile")
+            nocache: If True, build image without using cache
         
         Returns:
             Tuple of (Container object, SSH command string)
         """
         try:
+            # Check if container with same name already exists
+            try:
+                existing_container = self.client.containers.get(task_name)
+                logger.warning(f"Container {task_name} already exists. Removing it...")
+                
+                # Stop the container if it's running
+                try:
+                    if existing_container.status in ['running', 'paused']:
+                        logger.info(f"Stopping existing container {task_name}...")
+                        existing_container.stop(timeout=10)
+                except Exception as e:
+                    logger.warning(f"Failed to stop container gracefully: {e}")
+                
+                # Force remove the container
+                try:
+                    logger.info(f"Removing existing container {task_name}...")
+                    existing_container.remove(force=True)
+                    logger.info(f"Successfully removed old container {task_name}")
+                except Exception as e:
+                    logger.error(f"Failed to remove container: {e}")
+                    raise RuntimeError(f"Cannot remove existing container {task_name}: {e}")
+                    
+            except docker.errors.NotFound:
+                # Container doesn't exist, which is fine
+                logger.info(f"No existing container found with name {task_name}")
+            
             # If build_context is provided, build the image first
             if build_context:
                 logger.info(f"Building image from local Dockerfile: {build_context}")
@@ -161,6 +197,7 @@ echo "SSH setup complete"
                     path=build_context,
                     tag=image,  # Use image as tag name
                     dockerfile=dockerfile or "Dockerfile",
+                    nocache=nocache,
                 )
             
             # Default to exposing SSH if not specified
@@ -196,6 +233,10 @@ echo "SSH setup complete"
             logger.info(f"Copying trigger test script to container: {task_name}")
             self._copy_trigger_script_to_container(container, task_name)
             
+            # Fix reset.sh if it's empty (Dockerfile heredoc syntax issue)
+            logger.info(f"Checking and fixing reset.sh if needed in container: {task_name}")
+            self._fix_reset_sh_if_needed(container)
+            
             # Generate SSH connection command
             ssh_command = self._generate_ssh_command(container, task_name)
             
@@ -205,6 +246,269 @@ echo "SSH setup complete"
         except docker.errors.APIError as e:
             logger.error(f"Docker API error: {e}")
             raise RuntimeError(f"Failed to start container: {e}") from e
+    
+    def _get_container_workdir(self, container: Container) -> str:
+        """
+        Get the WORKDIR from container's config.
+        
+        Args:
+            container: Docker container object
+        
+        Returns:
+            Working directory path (defaults to /root if not set)
+        """
+        try:
+            # Reload container to get fresh config
+            container.reload()
+            
+            # Get WorkingDir from container config
+            workdir = container.attrs.get('Config', {}).get('WorkingDir', '')
+            
+            if workdir:
+                logger.info(f"Container WORKDIR: {workdir}")
+                return workdir
+            else:
+                # If no WORKDIR set, default to /root
+                logger.info("No WORKDIR set in container, using /root")
+                return "/root"
+                
+        except Exception as e:
+            logger.warning(f"Failed to get WORKDIR, defaulting to /root: {e}")
+            return "/root"
+    
+    def install_claude_code_in_container(
+        self, 
+        container: Container, 
+        api_key: str,
+        prompt: str,
+        timeout_sec: float = None
+    ) -> tuple[str, int, bool]:
+        """
+        Install Claude Code in container and run it with a prompt.
+        
+        Args:
+            container: Docker container object
+            api_key: Anthropic API key
+            prompt: Prompt to pass to Claude Code
+            timeout_sec: Optional timeout in seconds for Claude Code execution
+        
+        Returns:
+            Tuple of (output, exit_code, timeout_occurred)
+        """
+        timeout_occurred = False
+        try:
+            logger.info(f"Installing Claude Code in container {container.name}...")
+            
+            # Get container's working directory
+            workdir = self._get_container_workdir(container)
+            
+            # Installation script (exactly matching terminal-bench)
+            install_script = """
+set -e
+apt-get update
+apt-get install -y curl
+
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash
+
+source "$HOME/.nvm/nvm.sh"
+
+nvm install 22
+npm -v
+
+npm install -g @anthropic-ai/claude-code@latest
+"""
+            
+            # Run installation
+            logger.info("Running Claude Code installation (terminal-bench style)...")
+            exit_code, output = container.exec_run(
+                ["/bin/bash", "-c", install_script],
+                stream=False,
+                demux=False
+            )
+            
+            if exit_code != 0:
+                logger.error(f"Claude Code installation failed: {output.decode()}")
+                return output.decode(), exit_code, False
+            
+            logger.info("Claude Code installed successfully")
+            
+            # Prepare and run claude command (exactly matching terminal-bench)
+            logger.info(f"Running Claude Code with prompt in {workdir}...")
+            
+            # Escape prompt for shlex (terminal-bench uses shlex.quote)
+            import shlex
+            escaped_prompt = shlex.quote(prompt)
+            
+            # Define allowed tools (exactly matching terminal-bench ClaudeCodeAgent.ALLOWED_TOOLS)
+            allowed_tools = [
+                "Bash",
+                "Edit",
+                "Write",
+                "Read",
+                "Glob",
+                "Grep",
+                "LS",
+                "WebFetch",
+                "NotebookEdit",
+                "NotebookRead",
+                "TodoRead",
+                "TodoWrite",
+                "Agent",
+            ]
+            
+            # Build environment variables (matching terminal-bench _env property)
+            env_vars = f"""
+export ANTHROPIC_API_KEY="{api_key}"
+export FORCE_AUTO_BACKGROUND_TASKS=1
+export ENABLE_BACKGROUND_TASKS=1
+"""
+            # Add ANTHROPIC_MODEL if set in environment, otherwise use default
+            import os
+            model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+            # Remove "anthropic/" prefix if present
+            if model.startswith("anthropic/"):
+                model = model.removeprefix("anthropic/")
+            env_vars += f'export ANTHROPIC_MODEL="{model}"\n'
+            
+            # Disallow git commands to prevent Claude Code from adding files to staging area
+            # This prevents "already exists in working directory" errors during git apply
+            claude_script = f"""
+source "$HOME/.nvm/nvm.sh"
+{env_vars}
+cd {workdir}
+claude --verbose --output-format stream-json -p {escaped_prompt} --allowedTools {' '.join(allowed_tools)}
+"""
+            
+            # Execute with timeout if specified
+            if timeout_sec:
+                import threading
+                import time
+                
+                logger.info(f"Running Claude Code with {timeout_sec}s timeout...")
+                
+                # Create exec instance
+                exec_instance = container.client.api.exec_create(
+                    container.id,
+                    ["/bin/bash", "-c", claude_script],
+                    workdir=workdir
+                )
+                exec_id = exec_instance['Id']
+                
+                # Start execution in background
+                exec_stream = container.client.api.exec_start(exec_id, stream=True, demux=False)
+                
+                # Collect output with timeout
+                start_time = time.time()
+                output_chunks = []
+                
+                try:
+                    for chunk in exec_stream:
+                        if chunk:
+                            output_chunks.append(chunk)
+                        
+                        # Check timeout
+                        if time.time() - start_time > timeout_sec:
+                            logger.warning(f"Claude Code timeout after {timeout_sec}s, stopping...")
+                            timeout_occurred = True
+                            
+                            # Try to stop the exec gracefully by killing the process
+                            try:
+                                # Find and kill the claude process
+                                container.exec_run(
+                                    ["pkill", "-9", "-f", "claude"],
+                                    detach=False
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to kill claude process: {e}")
+                            
+                            break
+                    
+                    # Get final exit code
+                    exec_info = container.client.api.exec_inspect(exec_id)
+                    exit_code = exec_info.get('ExitCode', -1)
+                    
+                except Exception as e:
+                    logger.error(f"Error during Claude Code execution: {e}")
+                    exit_code = -1
+                
+                result_output = b''.join(output_chunks).decode() if output_chunks else ""
+                
+                if timeout_occurred:
+                    result_output += f"\n\n===== TIMEOUT: Claude Code execution stopped after {timeout_sec} seconds ====="
+                    logger.warning(f"Claude Code timed out after {timeout_sec}s")
+                else:
+                    logger.info(f"Claude Code execution completed with exit code {exit_code}")
+            else:
+                # No timeout, use simple exec_run
+                exit_code, output = container.exec_run(
+                    ["/bin/bash", "-c", claude_script],
+                    stream=False,
+                    demux=False,
+                    workdir=workdir
+                )
+                
+                result_output = output.decode() if isinstance(output, bytes) else output
+                logger.info(f"Claude Code execution completed with exit code {exit_code}")
+            
+            return result_output, exit_code, timeout_occurred
+            
+        except Exception as e:
+            logger.error(f"Failed to install/run Claude Code: {e}")
+            raise RuntimeError(f"Claude Code setup failed: {e}") from e
+    
+    def _fix_reset_sh_if_needed(self, container: Container) -> None:
+        """
+        Fix reset.sh if it's empty due to Dockerfile heredoc syntax issues.
+        
+        The Dockerfile uses: RUN <<'EOF_RESET' cat > /home/reset.sh
+        This syntax doesn't work correctly in some Docker versions, resulting in empty file.
+        We fix it dynamically by rewriting the script based on WORKDIR.
+        """
+        try:
+            # Check if reset.sh exists and is non-empty
+            exit_code, output = container.exec_run(
+                ["/bin/bash", "-c", "[ -s /home/reset.sh ] && echo 'exists' || echo 'empty'"],
+                stream=False,
+                demux=False
+            )
+            
+            result = output.decode().strip() if isinstance(output, bytes) else str(output).strip()
+            
+            if result == 'exists':
+                logger.info("reset.sh exists and is non-empty, no fix needed")
+                return
+            
+            logger.warning("reset.sh is empty or missing, recreating it...")
+            
+            # Get container's WORKDIR
+            workdir = self._get_container_workdir(container)
+            dir_name = workdir.split('/')[-1]
+            
+            # Create correct reset.sh content
+            reset_content = f"""#!/bin/bash
+rm -rf {workdir}/*
+cp -r /home/tmp_repo/* {workdir}
+"""
+            
+            # Write the script using heredoc in bash
+            fix_script = f"""cat > /home/reset.sh << 'EOF_RESET_FIX'
+{reset_content}EOF_RESET_FIX
+chmod +x /home/reset.sh
+"""
+            
+            exit_code, output = container.exec_run(
+                ["/bin/bash", "-c", fix_script],
+                stream=False,
+                demux=False
+            )
+            
+            if exit_code == 0:
+                logger.info("reset.sh has been recreated successfully")
+            else:
+                logger.error(f"Failed to recreate reset.sh: {output}")
+                
+        except Exception as e:
+            logger.error(f"Error fixing reset.sh: {e}")
     
     def _copy_trigger_script_to_container(self, container: Container, task_name: str) -> bool:
         """
@@ -419,7 +723,7 @@ if __name__ == "__main__":
         container_name: str,
         src_path: str,
         dest_path: str,
-    ) -> bool:
+    ) -> tuple[str, int]:
         """
         Copy files/directories from host to container.
         
@@ -429,7 +733,7 @@ if __name__ == "__main__":
             dest_path: Destination path in container
         
         Returns:
-            True if successful, False otherwise
+            Tuple of (output, exit_code)
         """
         try:
             import subprocess
@@ -445,21 +749,22 @@ if __name__ == "__main__":
             
             if result.returncode == 0:
                 logger.info(f"Successfully copied to {dest_path}")
-                return True
+                return result.stdout, 0
             else:
                 logger.error(f"Failed to copy: {result.stderr}")
-                return False
+                return result.stderr, result.returncode
                 
         except Exception as e:
             logger.error(f"Failed to copy files: {e}")
-            return False
+            return str(e), 1
     
     def exec_command_in_container(
         self,
         container_name: str,
         command: str,
         output_file: Optional[str] = None,
-    ) -> tuple[str, int]:
+        timeout_sec: float = None,
+    ) -> tuple[str, int, bool]:
         """
         Execute a command in a running container and capture output.
         
@@ -467,24 +772,84 @@ if __name__ == "__main__":
             container_name: Name of the container
             command: Command to execute
             output_file: Optional file path to save output
+            timeout_sec: Optional timeout in seconds
         
         Returns:
-            Tuple of (output string, exit code)
+            Tuple of (output string, exit code, timeout_occurred)
         """
+        timeout_occurred = False
         try:
             container = self.client.containers.get(container_name)
             logger.info(f"Executing command in {container_name}: {command}")
             
-            # Execute command
-            result = container.exec_run(
-                cmd=["bash", "-c", command],
-                stdout=True,
-                stderr=True,
-                stream=False,
-            )
-            
-            output = result.output.decode('utf-8', errors='replace')
-            exit_code = result.exit_code
+            # Execute with timeout if specified
+            if timeout_sec:
+                import time
+                
+                logger.info(f"Running command with {timeout_sec}s timeout...")
+                
+                # Create exec instance
+                exec_instance = container.client.api.exec_create(
+                    container.id,
+                    ["bash", "-c", command]
+                )
+                exec_id = exec_instance['Id']
+                
+                # Start execution in background
+                exec_stream = container.client.api.exec_start(exec_id, stream=True, demux=False)
+                
+                # Collect output with timeout
+                start_time = time.time()
+                output_chunks = []
+                
+                try:
+                    for chunk in exec_stream:
+                        if chunk:
+                            output_chunks.append(chunk)
+                        
+                        # Check timeout
+                        if time.time() - start_time > timeout_sec:
+                            logger.warning(f"Command timeout after {timeout_sec}s, stopping...")
+                            timeout_occurred = True
+                            
+                            # Try to kill the bash process
+                            try:
+                                container.exec_run(
+                                    ["pkill", "-9", "-f", "bash.*run-tests.sh"],
+                                    detach=False
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to kill test process: {e}")
+                            
+                            break
+                    
+                    # Get final exit code
+                    exec_info = container.client.api.exec_inspect(exec_id)
+                    exit_code = exec_info.get('ExitCode', -1)
+                    
+                except Exception as e:
+                    logger.error(f"Error during command execution: {e}")
+                    exit_code = -1
+                
+                output = b''.join(output_chunks).decode('utf-8', errors='replace') if output_chunks else ""
+                
+                if timeout_occurred:
+                    output += f"\n\n===== TIMEOUT: Test execution stopped after {timeout_sec} seconds ====="
+                    logger.warning(f"Command timed out after {timeout_sec}s")
+                else:
+                    logger.info(f"Command completed with exit code: {exit_code}")
+            else:
+                # No timeout, use simple exec_run
+                result = container.exec_run(
+                    cmd=["bash", "-c", command],
+                    stdout=True,
+                    stderr=True,
+                    stream=False,
+                )
+                
+                output = result.output.decode('utf-8', errors='replace')
+                exit_code = result.exit_code
+                logger.info(f"Command completed with exit code: {exit_code}")
             
             # Save to file if requested
             if output_file:
@@ -494,8 +859,7 @@ if __name__ == "__main__":
                     f.write(output)
                 logger.info(f"Output saved to: {output_file}")
             
-            logger.info(f"Command completed with exit code: {exit_code}")
-            return output, exit_code
+            return output, exit_code, timeout_occurred
             
         except docker.errors.NotFound:
             logger.error(f"Container {container_name} not found")

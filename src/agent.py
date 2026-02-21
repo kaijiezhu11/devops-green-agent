@@ -4,6 +4,8 @@ from a2a.server.tasks import TaskUpdater
 from a2a.types import Message, TaskState, Part, TextPart, DataPart
 from a2a.utils import get_message_text, new_agent_text_message
 import logging
+import asyncio
+from functools import partial
 
 from messenger import Messenger
 from docker_manager import DockerManager
@@ -21,6 +23,7 @@ class TaskConfig(BaseModel):
     network: Optional[str] = None
     build_context: Optional[str] = None  # Path to build context (triggers local build)
     dockerfile: Optional[str] = None  # Dockerfile name (default: "Dockerfile")
+    nocache: bool = False  # Build without cache
 
 
 class RunTestConfig(BaseModel):
@@ -123,16 +126,22 @@ class Agent:
                 new_agent_text_message(f"Starting container: {task_config.task_name}...")
             )
             
-            # Start the container on the host
-            container, ssh_command = self.docker_manager.start_task_container(
-                task_name=task_config.task_name,
-                image=task_config.image,
-                command=task_config.command,
-                environment=task_config.environment,
-                ports=task_config.ports,
-                network=task_config.network,
-                build_context=task_config.build_context,
-                dockerfile=task_config.dockerfile,
+            # Run Docker operations in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            container, ssh_command = await loop.run_in_executor(
+                None,  # Use default thread pool executor
+                partial(
+                    self.docker_manager.start_task_container,
+                    task_name=task_config.task_name,
+                    image=task_config.image,
+                    command=task_config.command,
+                    environment=task_config.environment,
+                    ports=task_config.ports,
+                    network=task_config.network,
+                    build_context=task_config.build_context,
+                    dockerfile=task_config.dockerfile,
+                    nocache=task_config.nocache,
+                )
             )
             
             logger.info(f"Container started: {container.name}")
@@ -181,15 +190,22 @@ class Agent:
                 new_agent_text_message(f"Preparing tests for container: {test_config.container_name}...")
             )
             
+            # Run all Docker operations in thread pool
+            loop = asyncio.get_event_loop()
+            
             # Step 1: Copy tests directory if requested
             if test_config.copy_tests:
                 logger.info("Copying tests directory to container")
                 tests_src = f"/workspace/{test_config.task_dir}/tests"
                 tests_dest = "/tests"
-                success = self.docker_manager.copy_to_container(
-                    container_name=test_config.container_name,
-                    src_path=tests_src,
-                    dest_path=tests_dest,
+                success = await loop.run_in_executor(
+                    None,
+                    partial(
+                        self.docker_manager.copy_to_container,
+                        container_name=test_config.container_name,
+                        src_path=tests_src,
+                        dest_path=tests_dest,
+                    )
                 )
                 if not success:
                     await updater.reject(
@@ -202,10 +218,14 @@ class Agent:
                 logger.info("Copying run-tests.sh to container")
                 script_src = f"/workspace/{test_config.task_dir}/run-tests.sh"
                 script_dest = "/run-tests.sh"
-                success = self.docker_manager.copy_to_container(
-                    container_name=test_config.container_name,
-                    src_path=script_src,
-                    dest_path=script_dest,
+                success = await loop.run_in_executor(
+                    None,
+                    partial(
+                        self.docker_manager.copy_to_container,
+                        container_name=test_config.container_name,
+                        src_path=script_src,
+                        dest_path=script_dest,
+                    )
                 )
                 if not success:
                     await updater.reject(
@@ -219,10 +239,14 @@ class Agent:
             )
             
             # Step 3: Execute tests in the container
-            output, exit_code = self.docker_manager.exec_command_in_container(
-                container_name=test_config.container_name,
-                command=f"bash {test_config.test_script}",
-                output_file=test_config.output_file,
+            output, exit_code = await loop.run_in_executor(
+                None,
+                partial(
+                    self.docker_manager.exec_command_in_container,
+                    container_name=test_config.container_name,
+                    command=f"bash {test_config.test_script}",
+                    output_file=test_config.output_file,
+                )
             )
             
             logger.info(f"Tests completed with exit code: {exit_code}")
@@ -234,22 +258,25 @@ class Agent:
             log_filename = f"test_log_{test_config.container_name}_{timestamp}.txt"
             log_path = f"/workspace/{log_filename}"
             
-            try:
-                with open(log_path, 'w') as f:
-                    f.write(f"=== Test Execution Log ===\n")
-                    f.write(f"Container: {test_config.container_name}\n")
-                    f.write(f"Task Directory: {test_config.task_dir}\n")
-                    f.write(f"Test Script: {test_config.test_script}\n")
-                    f.write(f"Exit Code: {exit_code}\n")
-                    f.write(f"Status: {'PASSED' if exit_code == 0 else 'FAILED'}\n")
-                    f.write(f"Timestamp: {datetime.now().isoformat()}\n")
-                    f.write(f"\n{'='*60}\n")
-                    f.write(f"Test Output:\n")
-                    f.write(f"{'='*60}\n\n")
-                    f.write(output)
-                logger.info(f"Test log saved to host: {log_filename}")
-            except Exception as e:
-                logger.error(f"Failed to save test log: {e}")
+            def save_log():
+                try:
+                    with open(log_path, 'w') as f:
+                        f.write(f"=== Test Execution Log ===\n")
+                        f.write(f"Container: {test_config.container_name}\n")
+                        f.write(f"Task Directory: {test_config.task_dir}\n")
+                        f.write(f"Test Script: {test_config.test_script}\n")
+                        f.write(f"Exit Code: {exit_code}\n")
+                        f.write(f"Status: {'PASSED' if exit_code == 0 else 'FAILED'}\n")
+                        f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+                        f.write(f"\n{'='*60}\n")
+                        f.write(f"Test Output:\n")
+                        f.write(f"{'='*60}\n\n")
+                        f.write(output)
+                    logger.info(f"Test log saved to host: {log_filename}")
+                except Exception as e:
+                    logger.error(f"Failed to save test log: {e}")
+            
+            await loop.run_in_executor(None, save_log)
             
             # Prepare result message
             status = "✅ PASSED" if exit_code == 0 else "❌ FAILED"
