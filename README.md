@@ -5,8 +5,10 @@ A green agent for batch evaluation of DevOps tasks using the [DevOps-Gym](https:
 ## Overview
 
 This agent evaluates purple agents on real-world DevOps tasks including:
-- **Issue Resolving**: Fix bugs in production codebases (e.g., containerd, Kubernetes)
-- **Question Answering**: Answer technical questions about codebases
+1. **Build and Configuration**: Project deployment and build system management
+2. **Monitoring**: Runtime problem detection and system diagnosis  
+3. **Issue Resolving**: Problem fixing in Java and Go projects
+4. **Test Generation**: Patch validation through test case generation
 
 The green agent:
 1. Receives an assessment request with purple agent endpoint and task configuration
