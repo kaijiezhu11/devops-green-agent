@@ -4,8 +4,58 @@ import docker
 from docker.models.containers import Container
 from typing import Optional
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_host_path(path: str) -> str:
+    """
+    Resolve a path to its host equivalent when running inside a container.
+    
+    When the Green Agent runs inside a Docker container, it needs to provide
+    host paths to the Docker daemon (via docker.sock) for build contexts and
+    file copying operations.
+    
+    Args:
+        path: Path that may be container-relative or host-absolute
+    
+    Returns:
+        Host-absolute path
+    """
+    if not path:
+        raise ValueError(f"Cannot resolve empty path: {path!r}")
+    
+    path = str(path).strip()
+    if not path:
+        raise ValueError("Cannot resolve empty path after stripping")
+    
+    # If we're running in a container with /workspace mount, check if path is under it
+    if os.path.exists('/workspace') and path.startswith('/workspace/'):
+        # Get the host workspace path from environment or assume current directory
+        host_workspace = os.environ.get('HOST_WORKSPACE_PATH', os.getcwd())
+        # Replace /workspace with actual host path
+        relative = path[len('/workspace/'):]
+        resolved = str(Path(host_workspace) / relative)
+        print(f"DEBUG resolve_host_path: /workspace -> {resolved}")
+        return resolved
+    
+    # If path starts with /DevOps-Gym and we have a mapped path
+    if path.startswith('/DevOps-Gym'):
+        # Check if there's an environment variable for host path
+        host_devops_gym = os.environ.get('HOST_DEVOPS_GYM_PATH')
+        if host_devops_gym:
+            relative = path[len('/DevOps-Gym'):]
+            if relative.startswith('/'):
+                relative = relative[1:]
+            resolved = str(Path(host_devops_gym) / relative) if relative else host_devops_gym
+            print(f"DEBUG resolve_host_path: /DevOps-Gym -> {resolved}")
+            return resolved
+    
+    # If path is already absolute and exists on host, use as-is
+    # This handles the case where we're running directly on the host
+    print(f"DEBUG resolve_host_path: Using as-is: {path}")
+    return path
 
 
 class DockerManager:
@@ -95,7 +145,9 @@ echo "SSH setup complete"
         Build a Docker image from a Dockerfile.
         
         Args:
-            path: Build context path (relative to /workspace in container)
+            path: Build context path. Can be:
+                  - Absolute path (will be resolved to host path if needed)
+                  - Relative path (will be resolved to /workspace/<path> then to host)
             tag: Tag for the built image
             dockerfile: Dockerfile name (default: "Dockerfile")
             nocache: If True, build without using cache
@@ -104,10 +156,37 @@ echo "SSH setup complete"
             Image ID
         """
         try:
-            # Build path is relative to the mounted workspace
-            build_path = f"/workspace/{path}" if not path.startswith("/workspace") else path
+            # Validate input
+            if not path or not isinstance(path, str):
+                raise ValueError(f"Invalid build context path: {path!r}")
             
-            logger.info(f"Building image from {build_path}/{dockerfile}")
+            path = path.strip()
+            if not path:
+                raise ValueError("Build context path cannot be empty")
+            
+            # Determine build path
+            print(f"DEBUG build_image: Input path='{path}' (type={type(path)})")
+            
+            # Make relative paths absolute
+            if not os.path.isabs(path):
+                path = f"/workspace/{path}"
+                print(f"DEBUG build_image: Made absolute: '{path}'")
+            
+            # Check if we're running in a container with volume mounts
+            # If path exists in container (e.g., /DevOps-Gym mounted), use it directly
+            # Docker daemon can access mounted volumes
+            if os.path.exists(path):
+                build_path = path
+                print(f"DEBUG build_image: Path exists in container, using directly: {build_path}")
+            else:
+                # Path doesn't exist in container, need to resolve to host path
+                build_path = resolve_host_path(path)
+                print(f"DEBUG build_image: Path not in container, resolved to host: {build_path}")
+            logger.info(f"Build context: {path} -> (host) {build_path}")
+            print(f"DEBUG: Build context: {path} -> (host) {build_path}")
+            print(f"DEBUG: build_path type: {type(build_path)}, value: '{build_path}'")
+            print(f"DEBUG: build_path bool: {bool(build_path)}")
+            logger.info(f"Dockerfile: {dockerfile}")
             logger.info(f"Tag: {tag}")
             if nocache:
                 logger.info("Building WITHOUT cache (--no-cache)")
@@ -191,8 +270,9 @@ echo "SSH setup complete"
                 logger.info(f"No existing container found with name {task_name}")
             
             # If build_context is provided, build the image first
-            if build_context:
+            if build_context and build_context.strip():
                 logger.info(f"Building image from local Dockerfile: {build_context}")
+                print(f"DEBUG start_task_container: build_context='{build_context}'")
                 self.build_image(
                     path=build_context,
                     tag=image,  # Use image as tag name
@@ -210,6 +290,8 @@ echo "SSH setup complete"
                 "detach": True,
                 "ports": ports,
                 "environment": environment or {},
+                "privileged": True,
+                "cap_add": ["SYS_ADMIN", "SYS_PTRACE", "NET_ADMIN"],
             }
             
             if command:
@@ -219,7 +301,7 @@ echo "SSH setup complete"
                 container_config["network"] = network
             
             # Start the container
-            logger.info(f"Starting container: {task_name}")
+            logger.info(f"Starting container: {task_name} (with privileged mode)")
             container = self.client.containers.run(**container_config)
             
             # Reload to get updated port information
@@ -729,7 +811,7 @@ if __name__ == "__main__":
         
         Args:
             container_name: Name of the container
-            src_path: Source path on host (absolute path)
+            src_path: Source path (will be resolved to host path if needed)
             dest_path: Destination path in container
         
         Returns:
@@ -738,11 +820,19 @@ if __name__ == "__main__":
         try:
             import subprocess
             container = self.client.containers.get(container_name)
-            logger.info(f"Copying {src_path} to {container_name}:{dest_path}")
+            
+            # Determine source path (similar logic to build_image)
+            # If path exists in container, use directly; otherwise resolve to host
+            if os.path.exists(src_path):
+                host_src_path = src_path
+                logger.info(f"Copying {src_path} (container path) to {container_name}:{dest_path}")
+            else:
+                host_src_path = resolve_host_path(src_path)
+                logger.info(f"Copying {src_path} -> (host) {host_src_path} to {container_name}:{dest_path}")
             
             # Use docker cp command
             result = subprocess.run(
-                ["docker", "cp", src_path, f"{container_name}:{dest_path}"],
+                ["docker", "cp", host_src_path, f"{container_name}:{dest_path}"],
                 capture_output=True,
                 text=True,
             )
