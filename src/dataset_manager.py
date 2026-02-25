@@ -10,7 +10,7 @@ class DatasetManager:
     """Manages the DevOps-Gym dataset repository."""
     
     # Default settings
-    REPO_URL = "git@github.com:ucsb-mlsec/DevOps-Gym.git"
+    REPO_URL = "https://github.com/ucsb-mlsec/DevOps-Gym.git"
     
     @staticmethod
     def _get_default_dataset_dir() -> Path:

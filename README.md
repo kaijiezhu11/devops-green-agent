@@ -61,6 +61,33 @@ uv run python test_batch_eval.py \
   --task-ids issue_resolving/containerd__containerd-4847
 ```
 
+
+#### Run Docker
+```bash
+uv run python start_oracle_agent.py \
+  --host 0.0.0.0 \
+  --port 9121 \
+  --card-url http://host.docker.internal:9121
+
+
+cd /scr/yuan/devops-greeen-agent
+docker build -t green-agent .
+docker run -d \
+  --name green-agent \
+  -p 9200:9009 \
+  --add-host=host.docker.internal:host-gateway \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  green-agent \
+  --host 0.0.0.0 --port 9009 --card-url http://localhost:9200
+
+
+cd /scr/yuan/devops-greeen-agent
+uv run python test_batch_eval.py \
+  --green-url http://localhost:9200 \
+  --purple-url http://host.docker.internal:9121 \
+  --task-ids issue_resolving/containerd__containerd-4847
+```
+
 ## Assessment Request Format
 
 Send an A2A message to the green agent with the following JSON structure:
