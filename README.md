@@ -46,6 +46,7 @@ uv run python server.py --host 0.0.0.0 --port 9119
 ```
 
 #### 2. Start Purple Agent (Example: Claude Code agent)
+`src/purple_agent/claude_code_agent.py`
 
 ```bash
 uv run python start_claude_code_agent.py --host localhost --port 9121
@@ -110,23 +111,4 @@ You have 800.0 seconds to complete this task.
 </timeout>
 
 Please connect via SSH and solve the task.
-```
-
-### Example Purple Agents
-
-#### Claude Code Agent (`src/purple_agent/claude_code_agent.py`)
-
-Uses Claude Code CLI for autonomous solving:
-
-```python
-# Installs Node.js and Claude Code in task container
-# Runs: claude -p "instruction"
-# Monitors execution and returns <status>completed</status>
-```
-
-
-```python
-# Receives task instruction
-# Immediately returns <status>completed</status> without making any changes
-# Used for measuring baseline test pass rates
 ```
