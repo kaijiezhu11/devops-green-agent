@@ -1,87 +1,114 @@
-# A2A Agent Template
+# DevOps Green Agent
 
-A minimal template for building [A2A (Agent-to-Agent)](https://a2a-protocol.org/latest/) green agents compatible with the [AgentBeats](https://agentbeats.dev) platform.
+A green agent for batch evaluation of DevOps tasks using the [DevOps-Gym](https://github.com/agentsea/DevOps-Gym) dataset. Coordinates with purple agents (solvers) to evaluate tasks and run tests.
 
-## Project Structure
+## Overview
 
-```
-src/
-├─ server.py      # Server setup and agent card configuration
-├─ executor.py    # A2A request handling
-├─ agent.py       # Your agent implementation goes here
-└─ messenger.py   # A2A messaging utilities
-tests/
-└─ test_agent.py  # Agent tests
-Dockerfile        # Docker configuration
-pyproject.toml    # Python dependencies
-.github/
-└─ workflows/
-   └─ test-and-publish.yml # CI workflow
-```
+This agent evaluates purple agents on real-world DevOps tasks including:
+1. **Build and Configuration**: Project deployment and build system management
+2. **Monitoring**: Runtime problem detection and system diagnosis  
+3. **Issue Resolving**: Problem fixing in Java and Go projects
+4. **Test Generation**: Patch validation through test case generation
 
-## Getting Started
+The green agent:
+1. Receives an assessment request with purple agent endpoint and task configuration
+2. Discovers and prepares DevOps tasks from DevOps-Gym dataset
+3. Spins up isolated Docker containers for each task
+4. Sends task instructions to purple agents via A2A protocol
+5. Runs tests to verify solutions
+6. Reports results with detailed metrics
 
-1. **Create your repository** - Click "Use this template" to create your own repository from this template
+## Quick Start
 
-2. **Implement your agent** - Add your agent logic to [`src/agent.py`](src/agent.py)
+### Prerequisites
 
-3. **Configure your agent card** - Fill in your agent's metadata (name, skills, description) in [`src/server.py`](src/server.py)
+- Docker installed and running
+- Python 3.13+
+- `uv` package manager
 
-4. **Write your tests** - Add custom tests for your agent in [`tests/test_agent.py`](tests/test_agent.py)
-
-For a concrete example of implementing a green agent using this template, see this [draft PR](https://github.com/RDI-Foundation/green-agent-template/pull/3).
-
-## Running Locally
+### Installation
 
 ```bash
+# Clone repository
+git clone https://github.com/yourusername/devops-greeen-agent
+cd devops-greeen-agent
+
 # Install dependencies
 uv sync
-
-# Run the server
-uv run src/server.py
 ```
 
-## Running with Docker
+### Running Locally
+
+#### 1. Start Green Agent
 
 ```bash
-# Build the image
-docker build -t my-agent .
-
-# Run the container
-docker run -p 9009:9009 my-agent
+uv run python server.py --host 0.0.0.0 --port 9119
 ```
 
-## Testing
-
-Run A2A conformance tests against your agent.
+#### 2. Start Purple Agent (Example: Claude Code agent)
+`src/purple_agent/claude_code_agent.py`
 
 ```bash
-# Install test dependencies
-uv sync --extra test
-
-# Start your agent (uv or docker; see above)
-
-# Run tests against your running agent URL
-uv run pytest --agent-url http://localhost:9009
+uv run python start_claude_code_agent.py --host localhost --port 9121
 ```
 
-## Publishing
 
-The repository includes a GitHub Actions workflow that automatically builds, tests, and publishes a Docker image of your agent to GitHub Container Registry.
+#### 3. Run Evaluation
 
-If your agent needs API keys or other secrets, add them in Settings → Secrets and variables → Actions → Repository secrets. They'll be available as environment variables during CI tests.
-
-- **Push to `main`** → publishes `latest` tag:
-```
-ghcr.io/<your-username>/<your-repo-name>:latest
+```bash
+uv run python test_batch_eval.py \
+  --purple-url http://localhost:9121 \
+  --task-ids issue_resolving/containerd__containerd-4847
 ```
 
-- **Create a git tag** (e.g. `git tag v1.0.0 && git push origin v1.0.0`) → publishes version tags:
-```
-ghcr.io/<your-username>/<your-repo-name>:1.0.0
-ghcr.io/<your-username>/<your-repo-name>:1
+## Assessment Request Format
+
+Send an A2A message to the green agent with the following JSON structure:
+
+```json
+{
+  "participants": {
+    "purple_agent": "http://purple-agent-url:port"
+  },
+  "config": {
+    "task_ids": ["issue_resolving/containerd__containerd-4847"],
+    "task_type": "issue_resolving",
+    "dataset": "/path/to/DevOps-Gym",
+    "force_reclone": false
+  }
+}
 ```
 
-Once the workflow completes, find your Docker image in the Packages section (right sidebar of your repository). Configure the package visibility in package settings.
+### Request Fields
 
-> **Note:** Organization repositories may need package write permissions enabled manually (Settings → Actions → General). Version tags must follow [semantic versioning](https://semver.org/) (e.g., `v1.0.0`).
+- **participants.purple_agent** (required): A2A endpoint URL of the purple agent to evaluate
+- **config.task_ids** (optional): Specific task IDs to evaluate (e.g., `["issue_resolving/containerd__containerd-4847"]`)
+- **config.task_type** (optional): Filter by task type: `"issue_resolving"`, `"qa"`, or omit for all types
+- **config.dataset** (optional): Path to DevOps-Gym dataset (defaults to `./DevOps-Gym`)
+- **config.force_reclone** (optional): Force re-clone of dataset (default: `false`)
+
+## Purple Agent Requirements
+
+Purple agents must:
+1. Expose an A2A server endpoint
+2. Handle task instructions sent by the green agent
+3. Connect to provided SSH endpoints to solve tasks
+4. Send **exactly one** `enqueue_event` call with the final result — this single message ends the A2A stream and signals task completion to the green agent. Do **not** send intermediate progress messages before the final result, as the first `enqueue_event` closes the stream.
+
+### Task Message Format
+
+The green agent sends task instructions in this format:
+
+```xml
+<ssh_command>ssh -p PORT root@localhost</ssh_command>
+
+<instruction>
+[Task description, issue details, and requirements]
+</instruction>
+
+<timeout>
+You have 800.0 seconds to complete this task.
+</timeout>
+
+Please connect via SSH and solve the task.
+```
