@@ -45,25 +45,12 @@ uv sync
 uv run python server.py --host 0.0.0.0 --port 9119
 ```
 
-#### 2. Start Purple Agent (Example: Oracle Agent)
-
-The Oracle agent uses gold solutions from DevOps-Gym for testing:
-
-```bash
-uv run python start_oracle_agent.py --host localhost --port 9121
-```
-
-Or use the Claude Code agent:
+#### 2. Start Purple Agent (Example: Claude Code agent)
 
 ```bash
 uv run python start_claude_code_agent.py --host localhost --port 9121
 ```
 
-Or use the Nop agent (for baseline testing):
-
-```bash
-uv run python start_nop_agent.py --host localhost --port 9121
-```
 
 #### 3. Run Evaluation
 
@@ -127,16 +114,6 @@ Please connect via SSH and solve the task.
 
 ### Example Purple Agents
 
-#### Oracle Agent (`src/purple_agent/oracle_agent.py`)
-
-Uses gold solutions from DevOps-Gym dataset for testing:
-
-```python
-# Extracts solution.patch or solution.sh from DevOps-Gym
-# Applies solution in the task container via docker exec
-# Returns <status>completed</status>
-```
-
 #### Claude Code Agent (`src/purple_agent/claude_code_agent.py`)
 
 Uses Claude Code CLI for autonomous solving:
@@ -147,9 +124,6 @@ Uses Claude Code CLI for autonomous solving:
 # Monitors execution and returns <status>completed</status>
 ```
 
-#### Nop Agent (`src/purple_agent/nop_agent.py`)
-
-A no-operation agent for baseline testing that does nothing:
 
 ```python
 # Receives task instruction
