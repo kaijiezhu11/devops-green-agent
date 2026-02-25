@@ -139,3 +139,6 @@ You have 800.0 seconds to complete this task.
 
 Please connect via SSH and solve the task.
 ```
+
+# Contributions
+This project is mainly built and maintained by [Michael Yang](https://github.com/MichaelY310).
