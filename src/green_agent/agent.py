@@ -6,6 +6,8 @@ import time
 import sys
 import os
 from pathlib import Path
+from pydantic import BaseModel, HttpUrl, ValidationError
+from typing import Any
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -14,17 +16,33 @@ from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
-from a2a.server.tasks import InMemoryTaskStore
+from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
 from a2a.types import (
     AgentCard, AgentSkill, AgentCapabilities, SendMessageSuccessResponse, Message, 
-    Part, TextPart, DataPart, TaskArtifactUpdateEvent, Artifact
+    Part, TextPart, DataPart, TaskArtifactUpdateEvent, Artifact,
+    Task, TaskState, UnsupportedOperationError, InvalidRequestError
 )
-from a2a.utils import new_agent_text_message, get_text_parts
+from a2a.utils import new_agent_text_message, get_text_parts, new_task, get_message_text
+from a2a.utils.errors import ServerError
 
 from src.util import parse_tags
-from src.util import a2a_helper
 from src.docker_manager import DockerManager
 from src.dataset_manager import DatasetManager
+from src.messenger import Messenger
+
+
+TERMINAL_STATES = {
+    TaskState.completed,
+    TaskState.canceled,
+    TaskState.failed,
+    TaskState.rejected
+}
+
+
+class BatchEvalRequest(BaseModel):
+    """Request format for batch evaluation."""
+    participants: dict[str, HttpUrl]
+    config: dict[str, Any]
 
 
 def get_task_environment(task_identifier: str, dataset_dir: Path = None):
@@ -138,26 +156,17 @@ Please connect via SSH and solve the task.
     print(f"Green agent: Sending task to purple agent at {purple_agent_url}...")
     print(f"Task description:\n{task_description}")
     
-    context_id = None
     start_time = time.time()
+    messenger = Messenger()
     
     try:
-        # Send initial message to purple agent
-        response = await a2a_helper.send_message(
-            purple_agent_url, task_description, context_id=context_id
+        # Send initial message to purple agent using new A2A client
+        purple_response = await messenger.talk_to_agent(
+            message=task_description,
+            url=purple_agent_url,
+            new_conversation=True,
+            timeout=int(timeout_config.get('max_agent_timeout_sec', 1200) + 60)  # Add buffer
         )
-        
-        res_root = response.root
-        assert isinstance(res_root, SendMessageSuccessResponse)
-        res_result = res_root.result
-        assert isinstance(res_result, Message)
-        
-        if context_id is None:
-            context_id = res_result.context_id
-        
-        text_parts = get_text_parts(res_result.parts)
-        assert len(text_parts) >= 1, "Expecting at least one text part from purple agent"
-        purple_response = "\n".join(text_parts)
         
         print(f"Green agent: Purple agent response:\n{purple_response}")
         
@@ -183,10 +192,56 @@ Please connect via SSH and solve the task.
     except Exception as e:
         print(f"Green agent: Error communicating with purple agent: {e}")
         agent_duration = time.time() - start_time
-        agent_timeout_occurred = False
-        purple_response = f"Error: {e}"
+        
+        # Clean up container on failure
+        try:
+            docker_manager.stop_and_remove_container(task_config['task_name'])
+        except:
+            pass
+        
+        # Return failure result
+        return {
+            'success': False,
+            'agent_duration': agent_duration,
+            'test_duration': 0,
+            'total_duration': agent_duration,
+            'agent_timeout': False,
+            'test_timeout': False,
+            'test_exit_code': -1,
+            'test_output': '',
+            'purple_agent_response': f"Error: {e}",
+            'ssh_command': '',
+            'parser_name': task_config.get('parser_name', 'swebench'),
+            'error': str(e)
+        }
     
-    # Step 3: Run tests regardless of purple agent status
+    # Check if purple agent actually completed
+    if agent_status != 'completed':
+        print(f"Green agent: Purple agent did not complete (status: {agent_status})")
+        
+        # Clean up container
+        try:
+            docker_manager.stop_and_remove_container(task_config['task_name'])
+        except:
+            pass
+        
+        # Return failure result
+        return {
+            'success': False,
+            'agent_duration': agent_duration,
+            'test_duration': 0,
+            'total_duration': agent_duration,
+            'agent_timeout': agent_timeout_occurred,
+            'test_timeout': False,
+            'test_exit_code': -1,
+            'test_output': '',
+            'purple_agent_response': purple_response,
+            'ssh_command': ssh_command,
+            'parser_name': task_config.get('parser_name', 'swebench'),
+            'error': f"Purple agent did not complete (status: {agent_status})"
+        }
+    
+    # Step 3: Run tests
     print("Green agent: Running tests...")
     test_start = time.time()
     
@@ -204,6 +259,35 @@ Please connect via SSH and solve the task.
         src_path=f"{task_config.get('build_context', '')}/run-tests.sh",
         dest_path="/run-tests.sh"
     )
+    
+    # Fix /home/fix-run.sh to apply test.patch and fix.patch separately.
+    # The default fix-run.sh passes both patches to a single `git apply` call,
+    # which fails entirely when fix.patch is empty (agent made no changes).
+    # This causes tests to run on raw base code, producing false positives.
+    # We surgically replace that line so test.patch is always applied independently.
+    fix_run_patch_cmd = (
+        "python3 -c \""
+        "import re, os\n"
+        "orig = open('/home/fix-run.sh').read()\n"
+        "fixed = re.sub(\n"
+        "    r'git apply /home/test\\.patch /home/fix\\.patch',\n"
+        "    'git apply /home/test.patch\\n"
+        "if [ -s /home/fix.patch ]; then git apply /home/fix.patch; fi',\n"
+        "    orig\n"
+        ")\n"
+        "open('/home/fix-run.sh', 'w').write(fixed)\n"
+        "os.chmod('/home/fix-run.sh', 0o755)\n"
+        "\""
+    )
+    out, rc, _ = docker_manager.exec_command_in_container(
+        container_name=task_config['task_name'],
+        command=fix_run_patch_cmd,
+        timeout_sec=10
+    )
+    if rc == 0:
+        print("Green agent: Patched /home/fix-run.sh to apply patches separately")
+    else:
+        print(f"Green agent: Warning - could not patch /home/fix-run.sh (rc={rc}): {out}")
     
     test_timeout = timeout_config.get('max_test_timeout_sec', 600)
     
@@ -228,55 +312,62 @@ Please connect via SSH and solve the task.
     passed = False
     
     if parser_name == 'swebench':
-        # SWEBench parser: check for SWEBench results block
-        if "SWEBench results starts here" in test_output and "SWEBench results ends here" in test_output:
-            import re
-            match = re.search(r"SWEBench results starts here\s+(PASSED|FAILED)\s+SWEBench results ends here", test_output, re.DOTALL)
-            if match:
-                result_str = match.group(1).strip()
-                passed = (result_str == "PASSED")
-                print(f"Green agent: SWEBench result = {result_str}")
-            else:
-                print("Green agent: SWEBench markers found but couldn't parse result")
-                passed = False
-        else:
+        # SWEBench parser (same as terminal-bench/terminal_bench/parsers/swebench_parser.py)
+        START_MARKER = "SWEBench results starts here"
+        END_MARKER = "SWEBench results ends here"
+        
+        if START_MARKER not in test_output or END_MARKER not in test_output:
             print("Green agent: SWEBench markers not found in output")
             passed = False
+        else:
+            # Extract content between markers
+            content = test_output.split(START_MARKER, 1)[-1]
+            content = content.rsplit(END_MARKER, 1)[0]
+            block = content.strip()
+            
+            # Simple check: if block is "PASSED", then passed
+            if block == "PASSED":
+                passed = True
+                print("Green agent: SWEBench result = PASSED")
+            else:
+                passed = False
+                print(f"Green agent: SWEBench result = FAILED (block: {block[:100]})")
     
     elif parser_name == 'pytest':
-        # Pytest parser: check for "short test summary info" section
-        if test_exit == 0:
-            # Exit code 0 means all tests passed
-            passed = True
-            print("Green agent: Pytest exit code 0 = PASSED")
-        elif test_exit == 4:
-            # Exit code 4 typically means "no tests were collected" which we treat as FAILED
-            passed = False
-            print("Green agent: Pytest exit code 4 (no tests collected) = FAILED")
-        else:
-            # Check if there are any PASSED lines in short test summary
-            import re
-            if re.search(r"=+\s*short test summary info\s*=+", test_output, re.IGNORECASE):
-                # Has summary section
-                summary_match = re.split(r"=+\s*short test summary info\s*=+", test_output, flags=re.IGNORECASE, maxsplit=1)
-                if len(summary_match) >= 2:
-                    summary_section = summary_match[1]
-                    # Check if all tests passed (only PASSED lines, no FAILED)
-                    has_passed = bool(re.search(r"^PASSED\s+", summary_section, re.MULTILINE))
-                    has_failed = bool(re.search(r"^FAILED\s+", summary_section, re.MULTILINE))
-                    
-                    if has_passed and not has_failed:
-                        passed = True
-                        print("Green agent: Pytest summary shows all PASSED")
-                    else:
-                        passed = False
-                        print(f"Green agent: Pytest summary shows failures (has_passed={has_passed}, has_failed={has_failed})")
-                else:
-                    passed = False
+        # Pytest parser (same as terminal-bench/terminal_bench/parsers/pytest_parser.py)
+        import re
+        
+        # Look for "short test summary info" section
+        SHORT_TEST_SUMMARY_INFO_PATTERN = r"=+\s*short test summary info\s*=+"
+        parts = re.split(
+            pattern=SHORT_TEST_SUMMARY_INFO_PATTERN,
+            string=test_output,
+            flags=re.IGNORECASE,
+            maxsplit=1,
+        )
+        
+        if len(parts) < 2:
+            # No short test summary found, check exit code
+            if test_exit == 0:
+                passed = True
+                print("Green agent: Pytest no summary found, but exit code 0 = PASSED")
             else:
-                # No summary section, rely on exit code
-                passed = (test_exit == 0)
-                print(f"Green agent: No pytest summary, using exit code: {test_exit}")
+                passed = False
+                print(f"Green agent: Pytest no summary found, exit code {test_exit} = FAILED")
+        else:
+            # Parse the short test summary section
+            short_test_summary = parts[1]
+            
+            # Check for any FAILED/ERROR/XPASS lines (these indicate failure)
+            has_failed = bool(re.search(r"^(FAILED|ERROR|XPASS)\s+", short_test_summary, re.MULTILINE))
+            
+            if has_failed:
+                passed = False
+                print("Green agent: Pytest summary shows FAILED/ERROR/XPASS = FAILED")
+            else:
+                # No failures in summary, consider it passed
+                passed = True
+                print("Green agent: Pytest summary shows no failures = PASSED")
     
     else:
         # Unknown parser, use simple heuristic
@@ -300,48 +391,90 @@ Please connect via SSH and solve the task.
     }
 
 
-class DevOpsGreenAgentExecutor(AgentExecutor):
+class Agent:
+    """DevOps Green Agent - manages batch evaluation of DevOps tasks."""
+    
+    required_roles: list[str] = ["purple_agent"]
+    
     def __init__(self):
         self.docker_manager = DockerManager()
     
-    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        import sys
-        print("Green agent: ========== EXECUTE CALLED ==========", flush=True)
-        sys.stdout.flush()
-        print("Green agent: Received batch evaluation request, parsing...", flush=True)
-        sys.stdout.flush()
+    def validate_request(self, request: BatchEvalRequest) -> tuple[bool, str]:
+        """Validate batch evaluation request."""
+        missing_roles = set(self.required_roles) - set(request.participants.keys())
+        if missing_roles:
+            return False, f"Missing required roles: {missing_roles}"
+        return True, "ok"
+    
+    async def run(self, message: Message, updater: TaskUpdater) -> None:
+        """Run batch evaluation of DevOps tasks.
+        
+        Args:
+            message: The incoming message with evaluation request
+            updater: Report progress and results
+        
+        Expected JSON format:
+        {
+            "participants": {
+                "purple_agent": "http://purple-agent-url:9020"
+            },
+            "config": {
+                "task_type": "issue_resolving",
+                "task_ids": ["task1", "task2"],
+                "dataset_dir": "/DevOps-Gym",
+                "force_reclone": false
+            }
+        }
+        """
+        input_text = get_message_text(message)
+        
+        # Try to parse as JSON (Pydantic validation)
         try:
-            user_input = context.get_user_input()
-            print(f"Green agent: User input: {user_input[:200] if user_input else 'None'}...")
-            tags = parse_tags(user_input)
-            print(f"Green agent: Parsed tags: {tags}")
-        except Exception as e:
-            print(f"Green agent: ERROR parsing input: {e}")
-            import traceback
-            traceback.print_exc()
-            raise
+            request: BatchEvalRequest = BatchEvalRequest.model_validate_json(input_text)
+            ok, msg = self.validate_request(request)
+            if not ok:
+                await updater.reject(new_agent_text_message(msg))
+                return
+        except ValidationError as e:
+            # Fall back to XML tags format for backward compatibility
+            print("Green agent: JSON validation failed, trying XML tags format...")
+            try:
+                tags = parse_tags(input_text)
+                print(f"Green agent: Parsed XML tags: {tags}")
+                
+                # Convert to BatchEvalRequest
+                participants = {'purple_agent': tags.get('purple_agent_url', '')}
+                config = {}
+                if tags.get('task_type'):
+                    config['task_type'] = tags.get('task_type').strip()
+                if tags.get('task_ids'):
+                    task_ids_str = tags.get('task_ids', '').strip()
+                    config['task_ids'] = [t.strip() for t in task_ids_str.replace(',', ' ').split() if t.strip()]
+                if tags.get('dataset_dir'):
+                    config['dataset_dir'] = tags.get('dataset_dir').strip()
+                if tags.get('force_reclone'):
+                    config['force_reclone'] = tags.get('force_reclone', '').strip().lower() in ('true', '1', 'yes')
+                
+                request = BatchEvalRequest(participants=participants, config=config)
+                ok, msg = self.validate_request(request)
+                if not ok:
+                    await updater.reject(new_agent_text_message(msg))
+                    return
+            except Exception as parse_error:
+                await updater.reject(new_agent_text_message(f"Invalid request format. Expected JSON or XML tags. Parse error: {e}, {parse_error}"))
+                return
         
-        purple_agent_url = tags.get('purple_agent_url', '')
-        task_type = tags.get('task_type', '').strip() or None  # Empty string -> None
-        task_ids_str = tags.get('task_ids', '').strip()
-        dataset_dir_str = tags.get('dataset_dir', '').strip()
+        # Extract parameters
+        purple_agent_url = str(request.participants["purple_agent"])
+        task_type = request.config.get("task_type")
+        task_ids = request.config.get("task_ids")
+        dataset_dir_str = request.config.get("dataset_dir", "")
         dataset_dir = Path(dataset_dir_str) if dataset_dir_str else None
-        force_reclone_str = tags.get('force_reclone', '').strip().lower()
-        force_reclone = force_reclone_str in ('true', '1', 'yes')
-        
-        # Parse task_ids (comma or space separated)
-        task_ids = None
-        if task_ids_str:
-            # Support both comma and space separated
-            task_ids = [t.strip() for t in task_ids_str.replace(',', ' ').split() if t.strip()]
+        force_reclone = request.config.get("force_reclone", False)
         
         # Docker network URL translation
-        # When running in Docker, translate localhost URLs to container network addresses
         if purple_agent_url and 'localhost' in purple_agent_url:
-            import os
-            # Check if we're running in a Docker container
             if os.path.exists('/.dockerenv') or os.path.exists('/run/.containerenv'):
-                # Replace localhost with oracle-agent service name
                 original_url = purple_agent_url
                 purple_agent_url = purple_agent_url.replace('localhost', 'oracle-agent')
                 purple_agent_url = purple_agent_url.replace('127.0.0.1', 'oracle-agent')
@@ -354,43 +487,38 @@ class DevOpsGreenAgentExecutor(AgentExecutor):
         print(f"Green agent: Force re-clone: {force_reclone}", flush=True)
         
         # Initialize dataset manager
-        print(f"Green agent: Initializing DatasetManager...", flush=True)
         dataset_mgr = DatasetManager(dataset_dir, force_reclone=force_reclone)
-        print(f"Green agent: DatasetManager initialized", flush=True)
         
         # Get list of tasks to run
-        print(f"Green agent: About to send 'Discovering tasks' message...", flush=True)
-        await event_queue.enqueue_event(
+        await updater.update_status(
+            TaskState.working,
             new_agent_text_message(f"🔍 Discovering tasks (type={task_type or 'all'}, ids={len(task_ids) if task_ids else 'all'})...")
         )
-        print(f"Green agent: 'Discovering tasks' message sent", flush=True)
         
         try:
-            print(f"Green agent: Getting task list...", flush=True)
             if task_ids:
-                # Specific task IDs provided
                 task_identifiers = task_ids
             else:
-                # List all tasks (filtered by type if specified)
                 task_identifiers = dataset_mgr.list_tasks(task_type=task_type)
             
             total_tasks = len(task_identifiers)
-            await event_queue.enqueue_event(
+            await updater.update_status(
+                TaskState.working,
                 new_agent_text_message(f"📋 Found {total_tasks} tasks to evaluate")
             )
             
         except Exception as e:
             import traceback
-            error_msg = f"Failed to list tasks: {e}"
+            error_msg = f"Failed to list tasks: {e}\n{traceback.format_exc()}"
             print(f"Green agent: {error_msg}")
-            print(f"Green agent: Traceback:\n{traceback.format_exc()}")
-            await event_queue.enqueue_event(new_agent_text_message(f"❌ {error_msg}"))
+            await updater.failed(new_agent_text_message(f"❌ {error_msg}"))
             return
         
         # Run evaluations sequentially
         results = []
         for idx, task_identifier in enumerate(task_identifiers, 1):
-            await event_queue.enqueue_event(
+            await updater.update_status(
+                TaskState.working,
                 new_agent_text_message(f"⚙️  [{idx}/{total_tasks}] Evaluating: {task_identifier}")
             )
             
@@ -459,7 +587,8 @@ class DevOpsGreenAgentExecutor(AgentExecutor):
                 
                 # Report progress
                 status_emoji = "✅" if result['success'] else "❌"
-                await event_queue.enqueue_event(
+                await updater.update_status(
+                    TaskState.working,
                     new_agent_text_message(
                         f"{status_emoji} [{idx}/{total_tasks}] {task_identifier}: "
                         f"{'PASSED' if result['success'] else 'FAILED'} "
@@ -472,7 +601,10 @@ class DevOpsGreenAgentExecutor(AgentExecutor):
                 error_msg = f"❌ [{idx}/{total_tasks}] {task_identifier}: ERROR - {str(e)}"
                 print(f"Green agent: {error_msg}")
                 print(f"Green agent: Traceback:\n{traceback.format_exc()}")
-                await event_queue.enqueue_event(new_agent_text_message(error_msg))
+                await updater.update_status(
+                    TaskState.working,
+                    new_agent_text_message(error_msg)
+                )
                 results.append({
                     'task_identifier': task_identifier,
                     'success': False,
@@ -502,15 +634,8 @@ Detailed Results:
             duration = f"{r.get('total_duration', 0):.1f}s" if 'total_duration' in r else "N/A"
             summary_text += f"\n{status} {r['task_identifier']} ({duration})"
         
-        # Send summary message
-        await event_queue.enqueue_event(new_agent_text_message(summary_text))
-        
-        # Add artifact with structured data for AgentBeats
-        import uuid
-        artifact = Artifact(
-            artifactId=str(uuid.uuid4()),
-            name="Batch Evaluation Results",
-            description=f"Evaluation results for {total_tasks} tasks",
+        # Add artifact with detailed results
+        await updater.add_artifact(
             parts=[
                 Part(root=TextPart(text=summary_text)),
                 Part(root=DataPart(data={
@@ -523,22 +648,52 @@ Detailed Results:
                     "results": results
                 }))
             ],
+            name="Batch Evaluation Results",
         )
         
-        artifact_event = TaskArtifactUpdateEvent(
-            kind="artifact-update",
-            taskId=context.task_id,
-            contextId=context.context_id,
-            artifact=artifact,
-        )
-        
-        await event_queue.enqueue_event(artifact_event)
-        
-        print(f"Green agent: Artifact sent with ID: {artifact.artifact_id}")
         print(f"Green agent: Batch evaluation complete. Passed: {passed}/{total_tasks}")
+
+
+class DevOpsGreenAgentExecutor(AgentExecutor):
+    """Executor for DevOps Green Agent - manages task lifecycle."""
+    
+    def __init__(self):
+        self.agents: dict[str, Agent] = {}  # context_id to agent instance
+    
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        msg = context.message
+        if not msg:
+            raise ServerError(error=InvalidRequestError(message="Missing message in request"))
+        
+        task = context.current_task
+        if task and task.status.state in TERMINAL_STATES:
+            raise ServerError(error=InvalidRequestError(message=f"Task {task.id} already processed (state: {task.status.state})"))
+        
+        if not task:
+            task = new_task(msg)
+            await event_queue.enqueue_event(task)
+        
+        context_id = task.context_id
+        agent = self.agents.get(context_id)
+        if not agent:
+            agent = Agent()
+            self.agents[context_id] = agent
+        
+        updater = TaskUpdater(event_queue, task.id, context_id)
+        
+        await updater.start_work()
+        try:
+            await agent.run(msg, updater)
+            if not updater._terminal_state_reached:
+                await updater.complete()
+        except Exception as e:
+            print(f"Task failed with agent error: {e}")
+            import traceback
+            traceback.print_exc()
+            await updater.failed(new_agent_text_message(f"Agent error: {e}", context_id=context_id, task_id=task.id))
     
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        raise NotImplementedError
+        raise ServerError(error=UnsupportedOperationError())
 
 
 def prepare_agent_card(url):

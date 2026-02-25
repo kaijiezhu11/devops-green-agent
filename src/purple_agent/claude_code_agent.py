@@ -46,7 +46,7 @@ class ClaudeCodePurpleAgentExecutor(AgentExecutor):
         
         if not ssh_command:
             await event_queue.enqueue_event(
-                new_agent_text_message("Error: No SSH command provided")
+                new_agent_text_message(f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n<status>error</status>\nError: No SSH command provided")
             )
             return
         
@@ -55,21 +55,11 @@ class ClaudeCodePurpleAgentExecutor(AgentExecutor):
         print(f"[Claude Code Purple Agent] Instruction = {instruction[:200]}...")
         print(f"[Claude Code Purple Agent] Timeout = {timeout_str}")
         
-        # Send acknowledgment
-        await event_queue.enqueue_event(
-            new_agent_text_message(
-                f"🚀 Claude Code Purple Agent starting...\n\n"
-                f"Task: {task_name}\n"
-                f"SSH: {ssh_command}\n"
-                f"{timeout_str}\n\n"
-                f"Installing Claude Code and connecting to container..."
-            )
-        )
-        
         # Get API key
         api_key = os.getenv('ANTHROPIC_API_KEY', '')
         if not api_key or api_key.strip() == '':
-            response = """
+            response = f"""🚀 Claude Code Purple Agent - Task: {task_name}
+
 <status>error</status>
 ❌ Error: ANTHROPIC_API_KEY environment variable is not set or empty. Cannot run Claude Code.
 Please set your Anthropic API key before running this command:
@@ -85,7 +75,8 @@ Please set your Anthropic API key before running this command:
         # ssh -p PORT root@localhost -> extract PORT
         port_match = re.search(r'-p\s+(\d+)', ssh_command)
         if not port_match:
-            response = """
+            response = f"""🚀 Claude Code Purple Agent - Task: {task_name}
+
 <status>error</status>
 ❌ Could not parse SSH port from command
 """
@@ -106,9 +97,6 @@ Please set your Anthropic API key before running this command:
         
         # Step 1: Install Node.js and Claude Code in the container
         print(f"[Claude Code Purple Agent] Step 1: Installing Node.js and Claude Code...")
-        await event_queue.enqueue_event(
-            new_agent_text_message(f"📦 Installing Node.js and Claude Code in container...")
-        )
         
         setup_script = """#!/bin/bash
 set -e
@@ -174,9 +162,6 @@ echo "[Setup] Installation complete!"
                 return
             
             print(f"[Claude Code Purple Agent] Running setup script...")
-            await event_queue.enqueue_event(
-                new_agent_text_message(f"⚙️  Running setup (this may take 1-2 minutes)...")
-            )
             
             # Run setup with long timeout (installation takes time)
             setup_cmd = [
@@ -199,36 +184,27 @@ echo "[Setup] Installation complete!"
             if result.returncode != 0:
                 error_msg = f"⚠️  Setup script failed (exit {result.returncode})"
                 print(f"[Claude Code Purple Agent] {error_msg}")
-                await event_queue.enqueue_event(new_agent_text_message(
-                    f"{error_msg}\n\nSetup output:\n{result.stdout[-500:]}\n\nSetup errors:\n{result.stderr[-500:]}"
-                ))
                 # Don't return error yet - try to continue
             else:
                 print(f"[Claude Code Purple Agent] Setup completed successfully")
-                await event_queue.enqueue_event(
-                    new_agent_text_message(f"✅ Installation complete!")
-                )
             
         except subprocess.TimeoutExpired:
             error_msg = "❌ Setup timeout (>5 minutes)"
             print(f"[Claude Code Purple Agent] {error_msg}")
             await event_queue.enqueue_event(new_agent_text_message(
-                f"{error_msg}\n<status>error</status>"
+                f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n{error_msg}\n<status>error</status>"
             ))
             return
         except Exception as e:
             error_msg = f"❌ Setup error: {e}"
             print(f"[Claude Code Purple Agent] {error_msg}")
             await event_queue.enqueue_event(new_agent_text_message(
-                f"{error_msg}\n<status>error</status>"
+                f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n{error_msg}\n<status>error</status>"
             ))
             return
         
         # Step 2: Run Claude Code with the instruction
         print(f"[Claude Code Purple Agent] Step 2: Running Claude Code...")
-        await event_queue.enqueue_event(
-            new_agent_text_message(f"🤖 Running Claude Code on task...\n\nInstruction: {instruction[:200]}...")
-        )
         
         # Prepare Claude Code command
         # Use --verbose --output-format stream-json for better logging
@@ -296,16 +272,13 @@ echo "[Claude Code] Execution complete!"
                 return
             
             print(f"[Claude Code Purple Agent] Executing Claude Code...")
-            await event_queue.enqueue_event(
-                new_agent_text_message(f"🏃 Claude Code is working on the task...")
-            )
             
             # Run Claude Code with timeout from task config (default 20 minutes)
             # Parse timeout from timeout_str like "You have 1200 seconds to complete this task."
             timeout_seconds = 1200  # default
-            timeout_match = re.search(r'(\d+)\s+seconds?', timeout_str)
+            timeout_match = re.search(r'(\d+(?:\.\d+)?)\s+seconds?', timeout_str)
             if timeout_match:
-                timeout_seconds = int(timeout_match.group(1))
+                timeout_seconds = int(float(timeout_match.group(1)))
             
             print(f"[Claude Code Purple Agent] Using timeout: {timeout_seconds}s")
             
@@ -338,7 +311,8 @@ echo "[Claude Code] Execution complete!"
                 stderr_sample = result.stderr[-500:] if result.stderr else ""
                 
                 if result.returncode == 0:
-                    response = f"""
+                    response = f"""🚀 Claude Code Purple Agent - Task: {task_name}
+
 ✅ Claude Code completed successfully!
 
 Duration: {claude_duration:.1f} seconds
@@ -353,7 +327,8 @@ Stderr (last 500 chars):
 <status>completed</status>
 """
                 else:
-                    response = f"""
+                    response = f"""🚀 Claude Code Purple Agent - Task: {task_name}
+
 ⚠️  Claude Code completed with exit code {result.returncode}
 
 Duration: {claude_duration:.1f} seconds
@@ -374,7 +349,8 @@ Stderr (last 500 chars):
                 claude_duration = time.time() - claude_start
                 timeout_msg = f"⏱️  Claude Code timeout after {claude_duration:.1f}s (max: {timeout_seconds}s)"
                 print(f"[Claude Code Purple Agent] {timeout_msg}")
-                response = f"""
+                response = f"""🚀 Claude Code Purple Agent - Task: {task_name}
+
 {timeout_msg}
 
 The task may not have been completed within the time limit.
@@ -389,7 +365,7 @@ The task may not have been completed within the time limit.
             print(f"[Claude Code Purple Agent] {error_msg}")
             print(f"[Claude Code Purple Agent] Traceback:\n{traceback.format_exc()}")
             await event_queue.enqueue_event(new_agent_text_message(
-                f"{error_msg}\n\n{traceback.format_exc()[-500:]}\n<status>error</status>"
+                f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n{error_msg}\n\n{traceback.format_exc()[-500:]}\n<status>error</status>"
             ))
     
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -418,10 +394,11 @@ def prepare_agent_card(url):
     return card
 
 
-def start_claude_code_purple_agent(host="localhost", port=9030):
+def start_claude_code_purple_agent(host="localhost", port=9030, card_url=None):
     print("Starting Claude Code Purple Agent...")
-    url = f"http://{host}:{port}"
+    url = card_url or f"http://{host}:{port}"
     card = prepare_agent_card(url)
+    print(f"Agent card URL: {url}")
     
     request_handler = DefaultRequestHandler(
         agent_executor=ClaudeCodePurpleAgentExecutor(),

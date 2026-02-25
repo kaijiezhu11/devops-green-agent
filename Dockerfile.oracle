@@ -5,8 +5,7 @@ RUN apt-get update && \
     apt-get install -y docker.io && \
     rm -rf /var/lib/apt/lists/*
 
-# Create agent user and add to host's docker group (GID 999)
-# Also add to container's docker group for compatibility
+# Create agent user and add to docker group
 RUN adduser agent && \
     usermod -aG docker agent && \
     usermod -aG 999 agent
@@ -14,13 +13,13 @@ RUN adduser agent && \
 USER agent
 WORKDIR /home/agent
 
-COPY pyproject.toml uv.lock README.md server.py ./
+COPY pyproject.toml uv.lock README.md start_oracle_agent.py ./
 COPY src src
 
 RUN \
     --mount=type=cache,target=/home/agent/.cache/uv,uid=1000 \
     uv sync --locked
 
-ENTRYPOINT ["uv", "run", "python", "server.py"]
+ENTRYPOINT ["uv", "run", "python", "start_oracle_agent.py"]
 CMD ["--host", "0.0.0.0", "--port", "9009"]
 EXPOSE 9009

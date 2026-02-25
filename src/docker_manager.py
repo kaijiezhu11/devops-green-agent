@@ -290,8 +290,6 @@ echo "SSH setup complete"
                 "detach": True,
                 "ports": ports,
                 "environment": environment or {},
-                "privileged": True,
-                "cap_add": ["SYS_ADMIN", "SYS_PTRACE", "NET_ADMIN"],
             }
             
             if command:
@@ -301,7 +299,7 @@ echo "SSH setup complete"
                 container_config["network"] = network
             
             # Start the container
-            logger.info(f"Starting container: {task_name} (with privileged mode)")
+            logger.info(f"Starting container: {task_name}")
             container = self.client.containers.run(**container_config)
             
             # Reload to get updated port information

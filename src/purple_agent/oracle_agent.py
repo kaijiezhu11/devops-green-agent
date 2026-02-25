@@ -42,7 +42,7 @@ class OraclePurpleAgentExecutor(AgentExecutor):
         
         if not ssh_command:
             await event_queue.enqueue_event(
-                new_agent_text_message("Error: No SSH command provided")
+                new_agent_text_message(f"Oracle agent applying gold solution for task: {task_identifier}\n\n<status>error</status>\nError: No SSH command provided")
             )
             return
         
@@ -51,17 +51,12 @@ class OraclePurpleAgentExecutor(AgentExecutor):
         if dataset_dir:
             print(f"Oracle Purple agent: Dataset dir = {dataset_dir}")
         
-        # Send acknowledgment
-        await event_queue.enqueue_event(
-            new_agent_text_message(f"Oracle agent applying gold solution for task: {task_identifier}")
-        )
-        
         # Extract SSH port
         import re
         port_match = re.search(r'-p\s+(\d+)', ssh_command)
         if not port_match:
             await event_queue.enqueue_event(
-                new_agent_text_message("<status>error</status>\nCould not parse SSH port")
+                new_agent_text_message(f"Oracle agent applying gold solution for task: {task_identifier}\n\n<status>error</status>\nCould not parse SSH port")
             )
             return
         
@@ -119,7 +114,7 @@ class OraclePurpleAgentExecutor(AgentExecutor):
                 error_msg = f"Solution not found (tried .patch and .sh) in: {task_info['task_path']}"
                 print(f"Oracle Purple agent: {error_msg}")
                 await event_queue.enqueue_event(
-                    new_agent_text_message(f"<status>error</status>\n{error_msg}")
+                    new_agent_text_message(f"Oracle agent applying gold solution for task: {task_identifier}\n\n<status>error</status>\n{error_msg}")
                 )
                 return
             
@@ -138,7 +133,8 @@ class OraclePurpleAgentExecutor(AgentExecutor):
             )
             
             if result['success']:
-                response = f"""
+                response = f"""Oracle agent applying gold solution for task: {task_identifier}
+
 Oracle agent successfully applied solution!
 
 Container: {container_name}
@@ -149,7 +145,8 @@ Output:
 <status>completed</status>
 """
             else:
-                response = f"""
+                response = f"""Oracle agent applying gold solution for task: {task_identifier}
+
 <status>error</status>
 Failed to apply solution:
 {result['error']}
@@ -163,7 +160,7 @@ Failed to apply solution:
             error_msg = f"Error: {e}\n{traceback.format_exc()}"
             print(f"Oracle Purple agent: {error_msg}")
             await event_queue.enqueue_event(
-                new_agent_text_message(f"<status>error</status>\n{error_msg}")
+                new_agent_text_message(f"Oracle agent applying gold solution for task: {task_identifier}\n\n<status>error</status>\n{error_msg}")
             )
     
     def _apply_solution_via_ssh(self, ssh_port: str, solution_path: Path, solution_type: str, task_name: str) -> dict:
@@ -340,10 +337,11 @@ def prepare_agent_card(url):
     return card
 
 
-def start_oracle_purple_agent(host="localhost", port=9020):
+def start_oracle_purple_agent(host="localhost", port=9020, card_url=None):
     print("Starting Oracle Purple Agent...")
-    url = f"http://{host}:{port}"
+    url = card_url or f"http://{host}:{port}"
     card = prepare_agent_card(url)
+    print(f"Agent card URL: {url}")
     
     request_handler = DefaultRequestHandler(
         agent_executor=OraclePurpleAgentExecutor(),
