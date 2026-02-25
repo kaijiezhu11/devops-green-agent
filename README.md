@@ -1,182 +1,156 @@
 # DevOps Green Agent
 
-AI agent evaluation framework for DevOps tasks.
+A green agent for batch evaluation of DevOps tasks using the [DevOps-Gym](https://github.com/agentsea/DevOps-Gym) dataset. Coordinates with purple agents (solvers) to evaluate tasks and run tests.
 
-## Purple Agents
+## Overview
 
-This framework supports multiple "purple agents" (solvers):
+This agent evaluates purple agents on real-world DevOps tasks including:
+- **Issue Resolving**: Fix bugs in production codebases (e.g., containerd, Kubernetes)
+- **Question Answering**: Answer technical questions about codebases
 
-1. **Oracle Agent** (`launch-oracle`): Applies gold solutions for testing infrastructure
-2. **Claude Code Agent** (`launch-claude-code`): Uses Claude Code AI to solve tasks (requires `ANTHROPIC_API_KEY`)
-
-### Claude Code Documentation
-
-- **[Quick Start (快速开始)](QUICK_START.md)** - Get started in 5 minutes
-- **[中文说明 (README_CN.md)](README_CN.md)** - Complete Chinese documentation
-- **[Detailed Documentation (CLAUDE_CODE_AGENT.md)](CLAUDE_CODE_AGENT.md)** - Full English documentation
-- **[Implementation Summary](IMPLEMENTATION_SUMMARY.md)** - Technical implementation details
-
-### Helper Scripts
-
-```bash
-# Check if your environment is ready
-uv run python check_setup.py
-
-# Compare Oracle vs Claude Code to identify issues
-./compare_agents.sh build/build_bugfix__elastic-logstash-49134052259
-```
+The green agent:
+1. Receives an assessment request with purple agent endpoint and task configuration
+2. Discovers and prepares DevOps tasks from DevOps-Gym dataset
+3. Spins up isolated Docker containers for each task
+4. Sends task instructions to purple agents via A2A protocol
+5. Runs tests to verify solutions
+6. Reports results with detailed metrics
 
 ## Quick Start
 
-### Local (uv)
+### Prerequisites
+
+- Docker installed and running
+- Python 3.13+
+- `uv` package manager
+
+### Installation
 
 ```bash
+# Clone repository
+git clone https://github.com/yourusername/devops-greeen-agent
+cd devops-greeen-agent
+
 # Install dependencies
 uv sync
-
-# Run a task with Oracle agent (applies gold solution for testing)
-uv run python main.py launch-oracle issue_resolving/containerd__containerd-4847
-
-# Run a task with Claude Code AI agent (requires ANTHROPIC_API_KEY)
-export ANTHROPIC_API_KEY="sk-ant-..."
-uv run python main.py launch-claude-code --dataset /scr/yuan/DevOps-Gym build/build_bugfix__elastic-logstash-49134052259
 ```
 
-### Docker
+### Running Locally
+
+#### 1. Start Green Agent
 
 ```bash
-# 1. Start containers
-cd /scr/yuan/devops-greeen-agent && \
-export HOST_WORKSPACE_PATH="$(pwd)" && \
-export HOST_DEVOPS_GYM_PATH="$(pwd)/DevOps-Gym" && \
-docker-compose -f docker-compose.full.yml up -d --build
-
-# 2. Run evaluation (single task)
-./docker-run-oracle.sh monitor/real_world_repos__grafana-high-cpu-usage
-
-# 3. Run evaluation (multiple tasks)
-./docker-run-oracle.sh \
-  issue_resolving/containerd__containerd-4847 \
-  monitor/real_world_repos__grafana-high-cpu-usage
-
-# 4. Stop containers
-docker-compose -f docker-compose.full.yml down
+uv run python server.py --host 0.0.0.0 --port 9119
 ```
 
-The Docker setup runs evaluations inside the green agent container:
-- Green agent: `http://localhost:9009`
-- Oracle agent: `http://localhost:9020`
+#### 2. Start Purple Agent (Example: Oracle Agent)
 
-## Commands
-
-### List Tasks
+The Oracle agent uses gold solutions from DevOps-Gym for testing:
 
 ```bash
-# All tasks
-uv run python main.py list
-
-# Filter by type
-uv run python main.py list --task-type issue_resolving
+uv run python start_oracle_agent.py --host localhost --port 9121
 ```
 
-Task types: `build`, `end_to_end`, `issue_resolving`, `monitor`, `test_generation`
-
-### Run Single/Multiple Tasks
+Or use the Claude Code agent:
 
 ```bash
-# Single task
-uv run python main.py launch-oracle issue_resolving/containerd__containerd-4847
-
-# Multiple tasks
-uv run python main.py launch-oracle \
-  build/build_bugfix__elastic-logstash-49134052259 \
-  issue_resolving/containerd__containerd-4847 \
-  monitor/real_world_repos__grafana-high-cpu-usage
+uv run python start_claude_code_agent.py --host localhost --port 9121
 ```
 
-### Batch Evaluation
+Or use the Nop agent (for baseline testing):
 
 ```bash
-# Run all issue_resolving tasks
-uv run python main.py batch --task-type issue_resolving
-
-# Run specific tasks
-uv run python main.py batch \
-  --task-id containerd__containerd-4847 \
-  --task-id build_bugfix__elastic-logstash-49134052259
-
-# Run ALL tasks
-uv run python main.py batch
+uv run python start_nop_agent.py --host localhost --port 9121
 ```
 
-## Options
-
-### Specify Dataset Location
+#### 3. Run Evaluation
 
 ```bash
---dataset /path/to/DevOps-Gym
+uv run python test_batch_eval.py \
+  --purple-url http://localhost:9121 \
+  --task-ids issue_resolving/containerd__containerd-4847
 ```
 
-Example:
-```bash
-uv run python main.py launch-oracle --dataset /scr/yuan/DevOps-Gym issue_resolving/containerd__containerd-4847
+## Assessment Request Format
+
+Send an A2A message to the green agent with the following JSON structure:
+
+```json
+{
+  "participants": {
+    "purple_agent": "http://purple-agent-url:port"
+  },
+  "config": {
+    "task_ids": ["issue_resolving/containerd__containerd-4847"],
+    "task_type": "issue_resolving",
+    "dataset": "/path/to/DevOps-Gym",
+    "force_reclone": false
+  }
+}
 ```
 
-### Force Re-clone Dataset
+### Request Fields
 
-```bash
---force-reclone
+- **participants.purple_agent** (required): A2A endpoint URL of the purple agent to evaluate
+- **config.task_ids** (optional): Specific task IDs to evaluate (e.g., `["issue_resolving/containerd__containerd-4847"]`)
+- **config.task_type** (optional): Filter by task type: `"issue_resolving"`, `"qa"`, or omit for all types
+- **config.dataset** (optional): Path to DevOps-Gym dataset (defaults to `./DevOps-Gym`)
+- **config.force_reclone** (optional): Force re-clone of dataset (default: `false`)
+
+## Purple Agent Requirements
+
+Purple agents must:
+1. Expose an A2A server endpoint
+2. Handle task instructions sent by the green agent
+3. Connect to provided SSH endpoints to solve tasks
+4. Send **exactly one** `enqueue_event` call with the final result — this single message ends the A2A stream and signals task completion to the green agent. Do **not** send intermediate progress messages before the final result, as the first `enqueue_event` closes the stream.
+
+### Task Message Format
+
+The green agent sends task instructions in this format:
+
+```xml
+<ssh_command>ssh -p PORT root@localhost</ssh_command>
+
+<instruction>
+[Task description, issue details, and requirements]
+</instruction>
+
+<timeout>
+You have 800.0 seconds to complete this task.
+</timeout>
+
+Please connect via SSH and solve the task.
 ```
 
-Example:
-```bash
-uv run python main.py launch-oracle --force-reclone issue_resolving/containerd__containerd-4847
+### Example Purple Agents
+
+#### Oracle Agent (`src/purple_agent/oracle_agent.py`)
+
+Uses gold solutions from DevOps-Gym dataset for testing:
+
+```python
+# Extracts solution.patch or solution.sh from DevOps-Gym
+# Applies solution in the task container via docker exec
+# Returns <status>completed</status>
 ```
 
-## Results
+#### Claude Code Agent (`src/purple_agent/claude_code_agent.py`)
 
-Terminal output shows progress and results:
+Uses Claude Code CLI for autonomous solving:
 
-```
-Green agent: Batch evaluation complete. Passed: 4/4
-```
-
-## Recommended Test (4 tasks, ~5 minutes)
-
-### Local
-
-```bash
-uv run python main.py launch-oracle \
-  --dataset /scr/yuan/DevOps-Gym \
-  build/build_bugfix__elastic-logstash-49134052259 \
-  issue_resolving/containerd__containerd-4847 \
-  monitor/real_world_repos__grafana-high-cpu-usage \
-  test_generation/containerd__containerd-4847
+```python
+# Installs Node.js and Claude Code in task container
+# Runs: claude -p "instruction"
+# Monitors execution and returns <status>completed</status>
 ```
 
-### Docker
+#### Nop Agent (`src/purple_agent/nop_agent.py`)
 
-```bash
-# 1. Start agents
-./docker-start.sh
+A no-operation agent for baseline testing that does nothing:
 
-# 2. Send evaluation request (from another terminal, or use AgentBeats)
-curl -X POST http://localhost:9009 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "message.send",
-    "params": {
-      "message": {
-        "role": "user",
-        "parts": [{"text": "<purple_agent_url>http://oracle-agent:9020</purple_agent_url>\n<task_ids>issue_resolving/containerd__containerd-4847</task_ids>\n<dataset_dir>/DevOps-Gym</dataset_dir>"}]
-      }
-    },
-    "id": "1"
-  }'
-
-# 3. View results in logs
-docker-compose -f docker-compose.full.yml logs green-agent
+```python
+# Receives task instruction
+# Immediately returns <status>completed</status> without making any changes
+# Used for measuring baseline test pass rates
 ```
-
-Expected: **4/4 PASSED** ✅
