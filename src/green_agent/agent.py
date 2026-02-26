@@ -471,6 +471,8 @@ class Agent:
         dataset_dir_str = request.config.get("dataset_dir", "")
         dataset_dir = Path(dataset_dir_str) if dataset_dir_str else None
         force_reclone = request.config.get("force_reclone", False)
+        output_dir_str = request.config.get("output_dir", "")
+        output_dir = Path(output_dir_str) if output_dir_str else None
         
         # Docker network URL translation
         if purple_agent_url and 'localhost' in purple_agent_url:
@@ -485,6 +487,12 @@ class Agent:
         print(f"Green agent: Task IDs: {task_ids or 'all'}", flush=True)
         print(f"Green agent: Dataset dir: {dataset_dir}", flush=True)
         print(f"Green agent: Force re-clone: {force_reclone}", flush=True)
+        print(f"Green agent: Output dir: {output_dir}", flush=True)
+        
+        # Create output directory if specified
+        if output_dir:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Green agent: Created output directory: {output_dir}", flush=True)
         
         # Initialize dataset manager
         dataset_mgr = DatasetManager(dataset_dir, force_reclone=force_reclone)
@@ -584,6 +592,53 @@ class Agent:
                 # Store result
                 result['task_identifier'] = task_identifier
                 results.append(result)
+                
+                # Save result to file if output_dir is specified
+                if output_dir:
+                    task_output_dir = output_dir / task_identifier.replace('/', '__')
+                    task_output_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Save agent response (Claude Code log)
+                    agent_log_file = task_output_dir / "agent_log.txt"
+                    with open(agent_log_file, 'w', encoding='utf-8') as f:
+                        f.write(f"Task: {task_identifier}\n")
+                        f.write(f"Status: {'PASSED' if result['success'] else 'FAILED'}\n")
+                        f.write(f"Agent Duration: {result.get('agent_duration', 0):.2f}s\n")
+                        f.write(f"Agent Timeout: {result.get('agent_timeout', False)}\n")
+                        f.write(f"SSH Command: {result.get('ssh_command', 'N/A')}\n")
+                        f.write("=" * 80 + "\n")
+                        f.write("Purple Agent Response:\n")
+                        f.write("=" * 80 + "\n")
+                        f.write(result.get('purple_agent_response', 'No response'))
+                        f.write("\n")
+                    
+                    # Save test output (evaluation result)
+                    test_output_file = task_output_dir / "evaluation_output.txt"
+                    with open(test_output_file, 'w', encoding='utf-8') as f:
+                        f.write(f"Task: {task_identifier}\n")
+                        f.write(f"Status: {'PASSED' if result['success'] else 'FAILED'}\n")
+                        f.write(f"Test Duration: {result.get('test_duration', 0):.2f}s\n")
+                        f.write(f"Test Timeout: {result.get('test_timeout', False)}\n")
+                        f.write(f"Test Exit Code: {result.get('test_exit_code', -1)}\n")
+                        f.write(f"Parser: {result.get('parser_name', 'N/A')}\n")
+                        f.write("=" * 80 + "\n")
+                        f.write("Test Output:\n")
+                        f.write("=" * 80 + "\n")
+                        f.write(result.get('test_output', 'No test output'))
+                        f.write("\n")
+                        if 'error' in result:
+                            f.write("\n" + "=" * 80 + "\n")
+                            f.write("Error:\n")
+                            f.write("=" * 80 + "\n")
+                            f.write(result['error'])
+                            f.write("\n")
+                    
+                    # Save summary JSON
+                    summary_json_file = task_output_dir / "summary.json"
+                    with open(summary_json_file, 'w', encoding='utf-8') as f:
+                        json.dump(result, f, indent=2, ensure_ascii=False)
+                    
+                    print(f"Green agent: Saved results to {task_output_dir}", flush=True)
                 
                 # Report progress
                 status_emoji = "✅" if result['success'] else "❌"

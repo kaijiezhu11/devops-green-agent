@@ -62,8 +62,9 @@ uv run python test_batch_eval.py \
 ```
 
 
-#### Run Docker
+### Running in Docker
 ```bash
+export ANTHROPIC_API_KEY=
 uv run python start_claude_code_agent.py \
   --host 0.0.0.0 \
   --port 9121 \
@@ -77,6 +78,7 @@ docker run -d \
   -p 9200:9009 \
   --add-host=host.docker.internal:host-gateway \
   -v /var/run/docker.sock:/var/run/docker.sock \
+  -v $(pwd)/results:/app/results \
   green-agent \
   --host 0.0.0.0 --port 9009 --card-url http://localhost:9200
 
@@ -85,7 +87,19 @@ cd /scr/yuan/devops-greeen-agent
 uv run python test_batch_eval.py \
   --green-url http://localhost:9200 \
   --purple-url http://host.docker.internal:9121 \
-  --task-ids issue_resolving/containerd__containerd-4847
+  --task-ids issue_resolving/containerd__containerd-4847 \
+  --output-dir /app/results
+```
+
+**Note**: When running Green Agent in Docker, use `--output-dir /app/results` (the container path). Make sure you mounted the volume when starting the container: `-v $(pwd)/results:/app/results`
+
+The output will create a directory structure like:
+```
+results/
+  issue_resolving__containerd__containerd-4847/
+    agent_log.txt           # Claude Code execution log
+    evaluation_output.txt   # Test results and output
+    summary.json            # Complete metadata in JSON
 ```
 
 ## Assessment Request Format
@@ -113,6 +127,10 @@ Send an A2A message to the green agent with the following JSON structure:
 - **config.task_type** (optional): Filter by task type: `"issue_resolving"`, `"qa"`, or omit for all types
 - **config.dataset** (optional): Path to DevOps-Gym dataset (defaults to `./DevOps-Gym`)
 - **config.force_reclone** (optional): Force re-clone of dataset (default: `false`)
+- **config.output_dir** (optional): Directory to save detailed results. For each task, creates a subdirectory containing:
+  - `agent_log.txt` - Purple agent's response and execution log
+  - `evaluation_output.txt` - Test execution output and results
+  - `summary.json` - Complete result metadata in JSON format
 
 ## Purple Agent Requirements
 
@@ -121,6 +139,21 @@ Purple agents must:
 2. Handle task instructions sent by the green agent
 3. Connect to provided SSH endpoints to solve tasks
 4. Send **exactly one** `enqueue_event` call with the final result — this single message ends the A2A stream and signals task completion to the green agent. Do **not** send intermediate progress messages before the final result, as the first `enqueue_event` closes the stream.
+
+### Claude Code Agent Verbose Mode
+
+The Claude Code Purple Agent supports real-time output streaming via the `CLAUDE_CODE_VERBOSE` environment variable:
+
+```bash
+# Enable real-time output (for demos)
+export CLAUDE_CODE_VERBOSE=1
+uv run python start_claude_code_agent.py --host 0.0.0.0 --port 9122
+
+# Disable real-time output (default, silent mode)
+uv run python start_claude_code_agent.py --host 0.0.0.0 --port 9122
+```
+
+When enabled, all Claude Code operations (git operations, code changes, test runs) will be printed to the console in real-time.
 
 ### Task Message Format
 

@@ -28,6 +28,7 @@ async def send_batch_eval_request(
     task_ids: list[str] = None,
     dataset_dir: str = None,
     force_reclone: bool = False,
+    output_dir: str = None,
 ):
     """
     Send batch evaluation request to green agent.
@@ -39,6 +40,7 @@ async def send_batch_eval_request(
         task_ids: Optional list of specific task IDs
         dataset_dir: Optional dataset directory path
         force_reclone: Whether to force re-clone the dataset
+        output_dir: Optional directory to save detailed results for each task
     """
     # Build request message
     request = {
@@ -56,6 +58,8 @@ async def send_batch_eval_request(
         request["config"]["dataset_dir"] = dataset_dir
     if force_reclone:
         request["config"]["force_reclone"] = force_reclone
+    if output_dir:
+        request["config"]["output_dir"] = output_dir
     
     message_text = json.dumps(request)
     
@@ -165,6 +169,9 @@ Examples:
 
   # Force re-clone dataset
   python test_batch_eval.py --force-reclone --task-type issue_resolving --purple-url http://localhost:9121
+
+  # Save detailed results to output directory
+  python test_batch_eval.py --task-ids issue_resolving/containerd__containerd-4847 --purple-url http://localhost:9121 --output-dir ./results
         """
     )
     
@@ -202,6 +209,11 @@ Examples:
         action="store_true",
         help="Force re-clone the dataset from GitHub"
     )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        help="Directory to save detailed results for each task (creates subdirectories per task)"
+    )
     
     args = parser.parse_args()
     
@@ -212,6 +224,7 @@ Examples:
         task_ids=args.task_ids,
         dataset_dir=args.dataset,
         force_reclone=args.force_reclone,
+        output_dir=args.output_dir,
     ))
 
 
