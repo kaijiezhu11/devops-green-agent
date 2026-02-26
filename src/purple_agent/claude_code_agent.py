@@ -288,35 +288,72 @@ echo "[Claude Code] Execution complete!"
                 'bash', '/tmp/run_claude.sh'
             ]
             
+            # Check if verbose mode is enabled
+            verbose = os.environ.get('CLAUDE_CODE_VERBOSE', '').lower() in ('1', 'true', 'yes')
+            
             try:
-                result = subprocess.run(
-                    run_cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_seconds + 60  # Add 1 minute buffer
-                )
+                if verbose:
+                    # Real-time streaming mode
+                    print(f"[Claude Code Purple Agent] Running in VERBOSE mode - showing real-time output...")
+                    print("=" * 80)
+                    process = subprocess.Popen(
+                        run_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1
+                    )
+                    
+                    output_lines = []
+                    try:
+                        for line in process.stdout:
+                            print(line.rstrip())
+                            output_lines.append(line)
+                        
+                        process.wait(timeout=timeout_seconds + 60)
+                        result_stdout = ''.join(output_lines)
+                        result_stderr = ""
+                        result_returncode = process.returncode
+                        
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        raise
+                    
+                    print("=" * 80)
+                else:
+                    # Silent mode - capture all output
+                    result = subprocess.run(
+                        run_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_seconds + 60
+                    )
+                    result_stdout = result.stdout
+                    result_stderr = result.stderr
+                    result_returncode = result.returncode
                 
                 claude_duration = time.time() - claude_start
                 
                 print(f"[Claude Code Purple Agent] Claude Code finished in {claude_duration:.1f}s")
-                print(f"[Claude Code Purple Agent] Exit code: {result.returncode}")
-                print(f"[Claude Code Purple Agent] Output length: {len(result.stdout)} chars")
-                print(f"[Claude Code Purple Agent] Claude Code output (last 1000 chars):")
-                print(result.stdout[-1000:] if result.stdout else "(no output)")
-                print(f"[Claude Code Purple Agent] Claude Code stderr (last 1000 chars):")
-                print(result.stderr[-1000:] if result.stderr else "(no stderr)")
+                print(f"[Claude Code Purple Agent] Exit code: {result_returncode}")
+                if not verbose:
+                    print(f"[Claude Code Purple Agent] Output length: {len(result_stdout)} chars")
+                    print(f"[Claude Code Purple Agent] Claude Code output (last 1000 chars):")
+                    print(result_stdout[-1000:] if result_stdout else "(no output)")
+                    print(f"[Claude Code Purple Agent] Claude Code stderr (last 1000 chars):")
+                    print(result_stderr[-1000:] if result_stderr else "(no stderr)")
                 
                 # Prepare response
-                output_sample = result.stdout[-1500:] if result.stdout else ""
-                stderr_sample = result.stderr[-500:] if result.stderr else ""
+                output_sample = result_stdout[-1500:] if result_stdout else ""
+                stderr_sample = result_stderr[-500:] if result_stderr else ""
                 
-                if result.returncode == 0:
+                if result_returncode == 0:
                     response = f"""🚀 Claude Code Purple Agent - Task: {task_name}
 
 ✅ Claude Code completed successfully!
 
 Duration: {claude_duration:.1f} seconds
-Exit Code: {result.returncode}
+Exit Code: {result_returncode}
 
 Output (last 1500 chars):
 {output_sample}
@@ -329,7 +366,7 @@ Stderr (last 500 chars):
                 else:
                     response = f"""🚀 Claude Code Purple Agent - Task: {task_name}
 
-⚠️  Claude Code completed with exit code {result.returncode}
+⚠️  Claude Code completed with exit code {result_returncode}
 
 Duration: {claude_duration:.1f} seconds
 
