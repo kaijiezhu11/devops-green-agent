@@ -64,7 +64,7 @@ uv run python test_batch_eval.py \
 
 #### Run Docker
 ```bash
-uv run python start_oracle_agent.py \
+uv run python start_claude_code_agent.py \
   --host 0.0.0.0 \
   --port 9121 \
   --card-url http://host.docker.internal:9121
