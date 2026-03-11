@@ -1,0 +1,33 @@
+{
+  manifest_version: "0.1.0",
+
+  program: {
+    image: "devops-claude-code-agent:local",
+    entrypoint: ["uv", "run", "python", "start_claude_code_agent.py", "--host", "0.0.0.0", "--port", "9009"],
+    env: {
+      ANTHROPIC_API_KEY: "${config.anthropic_api_key}",
+    },
+    network: {
+      endpoints: [
+        { name: "endpoint", port: 9009 }
+      ]
+    }
+  },
+
+  config_schema: {
+    type: "object",
+    properties: {
+      anthropic_api_key: { type: "string", secret: true },
+    },
+    required: ["anthropic_api_key"],
+    additionalProperties: false,
+  },
+
+  provides: {
+    a2a: { kind: "a2a", endpoint: "endpoint" }
+  },
+
+  exports: {
+    a2a: "a2a"
+  }
+}

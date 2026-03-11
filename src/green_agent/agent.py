@@ -384,8 +384,8 @@ Please connect via SSH and solve the task.
         "agent_timeout": agent_timeout_occurred,
         "test_timeout": test_timeout_occurred,
         "test_exit_code": test_exit,
-        "test_output": test_output[:1000],  # Truncate for artifact
-        "purple_agent_response": purple_response[:500],  # Truncate
+        "test_output": test_output,
+        "purple_agent_response": purple_response,
         "ssh_command": ssh_command,
         "parser_name": parser_name,
     }
