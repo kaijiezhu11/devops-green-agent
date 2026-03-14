@@ -41,12 +41,8 @@
     additionalProperties: false,
   },
 
-  provides: {
-    a2a: { kind: "a2a", endpoint: "endpoint" }
-  },
-
-  exports: {
-    a2a: "a2a"
+  slots: {
+    purple_agent: { kind: "a2a" },
   },
 
   metadata: {
