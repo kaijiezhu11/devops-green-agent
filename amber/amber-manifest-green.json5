@@ -41,10 +41,6 @@
     additionalProperties: false,
   },
 
-  slots: {
-    purple_agent: { kind: "a2a" },  // outbound: green -> purple
-  },
-
   provides: {
     a2a: { kind: "a2a", endpoint: "endpoint" }
   },
