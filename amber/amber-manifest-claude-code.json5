@@ -10,10 +10,10 @@
       "uv", "run", "python", "start_claude_code_agent.py",
       "--host", "0.0.0.0",
       "--port", "9009",
-      "--model", "${config.model}",
     ],
     env: {
       ANTHROPIC_API_KEY: "${config.anthropic_api_key}",
+      CLAUDE_MODEL: "${config.model}",
     },
     network: {
       endpoints: [
