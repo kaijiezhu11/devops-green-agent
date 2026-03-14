@@ -25,8 +25,9 @@ from src.util import parse_tags
 class ClaudeCodePurpleAgentExecutor(AgentExecutor):
     """Purple agent that uses Claude Code to solve tasks via SSH."""
     
-    def __init__(self):
+    def __init__(self, model: str = None):
         self.ctx_id_to_state = {}
+        self.model = model  # None means use Claude Code's default
     
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         user_input = context.get_user_input()
@@ -246,7 +247,7 @@ echo "[Claude Code] Starting Claude Code..."
 echo "[Claude Code] Instruction: {instruction[:100]}..."
 
 # Run Claude Code
-claude --verbose --output-format stream-json -p {escaped_instruction} --allowedTools Bash Edit Write Read Glob Grep LS WebFetch NotebookEdit NotebookRead TodoRead TodoWrite Agent
+claude --verbose --output-format stream-json -p {escaped_instruction} {f'--model {self.model}' if self.model else ''} --allowedTools Bash Edit Write Read Glob Grep LS WebFetch NotebookEdit NotebookRead TodoRead TodoWrite Agent
 
 echo "[Claude Code] Execution complete!"
 """
@@ -436,14 +437,16 @@ def prepare_agent_card(url):
     return card
 
 
-def start_claude_code_purple_agent(host="localhost", port=9030, card_url=None):
+def start_claude_code_purple_agent(host="localhost", port=9030, card_url=None, model=None):
     print("Starting Claude Code Purple Agent...")
+    if model:
+        print(f"Using model: {model}")
     url = card_url or f"http://{host}:{port}"
     card = prepare_agent_card(url)
     print(f"Agent card URL: {url}")
     
     request_handler = DefaultRequestHandler(
-        agent_executor=ClaudeCodePurpleAgentExecutor(),
+        agent_executor=ClaudeCodePurpleAgentExecutor(model=model),
         task_store=InMemoryTaskStore(),
     )
     

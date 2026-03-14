@@ -1,0 +1,50 @@
+{
+  manifest_version: "0.1.0",
+
+  // Claude Code purple agent — uses Anthropic's Claude Code CLI to solve DevOps tasks via SSH.
+  // For other purple agents, create a separate amber-manifest-<agent-name>.json5 file.
+
+  program: {
+    image: "ghcr.io/kaijiezhu11/devops-claude-agent:latest",
+    entrypoint: [
+      "uv", "run", "python", "start_claude_code_agent.py",
+      "--host", "0.0.0.0",
+      "--port", "9009",
+      "--model", "${config.model}",
+    ],
+    env: {
+      ANTHROPIC_API_KEY: "${config.anthropic_api_key}",
+    },
+    network: {
+      endpoints: [
+        { name: "endpoint", port: 9009 }
+      ]
+    }
+  },
+
+  config_schema: {
+    type: "object",
+    properties: {
+      anthropic_api_key: {
+        type: "string",
+        secret: true,
+        description: "Anthropic API key for Claude"
+      },
+      model: {
+        type: "string",
+        default: "claude-opus-4-5",
+        description: "Claude model to use (e.g. claude-opus-4-5, claude-sonnet-4-5, claude-haiku-3-5)"
+      },
+    },
+    required: ["anthropic_api_key"],
+    additionalProperties: false,
+  },
+
+  provides: {
+    a2a: { kind: "a2a", endpoint: "endpoint" }
+  },
+
+  exports: {
+    a2a: "a2a"
+  }
+}
