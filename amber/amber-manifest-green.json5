@@ -18,7 +18,25 @@
   // API keys belong to the purple agent.
   config_schema: {
     type: "object",
-    properties: {},
+    properties: {
+      task_type: {
+        type: "string",
+        description: "Filter tasks by type: issue_resolving | build | end_to_end | monitor | test_generation"
+      },
+      task_ids: {
+        type: "array",
+        items: { type: "string" },
+        description: "Specific task IDs to run, e.g. [\"issue_resolving/containerd__containerd-4978\"]"
+      },
+      output_dir: {
+        type: "string",
+        description: "Directory to save detailed results (default: /home/agent/results)"
+      },
+      force_reclone: {
+        type: "boolean",
+        description: "Force re-clone the dataset from GitHub"
+      },
+    },
     required: [],
     additionalProperties: false,
   },
