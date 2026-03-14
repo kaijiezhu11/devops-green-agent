@@ -10,6 +10,7 @@ dependencies = [
     "uvicorn>=0.38.0",
     "docker>=7.0.0",
     "pyyaml>=6.0.3",
+    "agentbeats>=1.2.6",
 ]
 
 [project.optional-dependencies]

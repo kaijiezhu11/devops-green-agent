@@ -46,7 +46,7 @@ class ClaudeCodePurpleAgentExecutor(AgentExecutor):
         
         if not ssh_command:
             await event_queue.enqueue_event(
-                new_agent_text_message(f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n<status>error</status>\nError: No SSH command provided")
+                new_agent_text_message(f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n<status>error</status>\nError: No SSH command provided", context_id=context_id)
             )
             return
         
@@ -66,7 +66,7 @@ Please set your Anthropic API key before running this command:
   export ANTHROPIC_API_KEY="your-api-key-here"
 """
             print(f"[Claude Code Purple Agent] API key not set or empty")
-            await event_queue.enqueue_event(new_agent_text_message(response))
+            await event_queue.enqueue_event(new_agent_text_message(response, context_id=context_id))
             return
         
         print(f"[Claude Code Purple Agent] API key found (length: {len(api_key)} chars, starts with: {api_key[:10]}...)")
@@ -80,7 +80,7 @@ Please set your Anthropic API key before running this command:
 <status>error</status>
 ❌ Could not parse SSH port from command
 """
-            await event_queue.enqueue_event(new_agent_text_message(response))
+            await event_queue.enqueue_event(new_agent_text_message(response, context_id=context_id))
             return
         
         ssh_port = port_match.group(1)
@@ -157,7 +157,8 @@ echo "[Setup] Installation complete!"
                 error_msg = f"❌ Failed to write setup script: {result.stderr}"
                 print(f"[Claude Code Purple Agent] {error_msg}")
                 await event_queue.enqueue_event(new_agent_text_message(
-                    f"{error_msg}\n<status>error</status>"
+                    f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n{error_msg}\n<status>error</status>",
+                    context_id=context_id,
                 ))
                 return
             
@@ -192,14 +193,16 @@ echo "[Setup] Installation complete!"
             error_msg = "❌ Setup timeout (>5 minutes)"
             print(f"[Claude Code Purple Agent] {error_msg}")
             await event_queue.enqueue_event(new_agent_text_message(
-                f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n{error_msg}\n<status>error</status>"
+                f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n{error_msg}\n<status>error</status>",
+                context_id=context_id,
             ))
             return
         except Exception as e:
             error_msg = f"❌ Setup error: {e}"
             print(f"[Claude Code Purple Agent] {error_msg}")
             await event_queue.enqueue_event(new_agent_text_message(
-                f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n{error_msg}\n<status>error</status>"
+                f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n{error_msg}\n<status>error</status>",
+                context_id=context_id,
             ))
             return
         
@@ -267,7 +270,8 @@ echo "[Claude Code] Execution complete!"
                 error_msg = f"❌ Failed to write Claude script: {result.stderr}"
                 print(f"[Claude Code Purple Agent] {error_msg}")
                 await event_queue.enqueue_event(new_agent_text_message(
-                    f"{error_msg}\n<status>error</status>"
+                    f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n{error_msg}\n<status>error</status>",
+                    context_id=context_id,
                 ))
                 return
             
@@ -379,7 +383,7 @@ Stderr (last 500 chars):
 <status>completed</status>
 """
                 
-                await event_queue.enqueue_event(new_agent_text_message(response))
+                await event_queue.enqueue_event(new_agent_text_message(response, context_id=context_id))
                 print(f"[Claude Code Purple Agent] Sent completion response")
                 
             except subprocess.TimeoutExpired:
@@ -394,7 +398,7 @@ The task may not have been completed within the time limit.
 
 <status>timeout</status>
 """
-                await event_queue.enqueue_event(new_agent_text_message(response))
+                await event_queue.enqueue_event(new_agent_text_message(response, context_id=context_id))
                 
         except Exception as e:
             import traceback
@@ -402,7 +406,8 @@ The task may not have been completed within the time limit.
             print(f"[Claude Code Purple Agent] {error_msg}")
             print(f"[Claude Code Purple Agent] Traceback:\n{traceback.format_exc()}")
             await event_queue.enqueue_event(new_agent_text_message(
-                f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n{error_msg}\n\n{traceback.format_exc()[-500:]}\n<status>error</status>"
+                f"🚀 Claude Code Purple Agent - Task: {task_name}\n\n{error_msg}\n\n{traceback.format_exc()[-500:]}\n<status>error</status>",
+                context_id=context_id,
             ))
     
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -447,4 +452,4 @@ def start_claude_code_purple_agent(host="localhost", port=9030, card_url=None):
         http_handler=request_handler,
     )
     
-    uvicorn.run(app.build(), host=host, port=port)
+    uvicorn.run(app.build(), host=host, port=port, timeout_keep_alive=300)
