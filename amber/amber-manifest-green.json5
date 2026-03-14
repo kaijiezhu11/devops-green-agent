@@ -1,9 +1,17 @@
 {
   manifest_version: "0.1.0",
-
   program: {
     image: "ghcr.io/MichaelY310/devops-green-agent:latest",
-    entrypoint: ["uv", "run", "python", "server.py", "--host", "0.0.0.0", "--port", "9009"],
+    entrypoint: [
+      "uv",
+      "run",
+      "python",
+      "server.py",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "9009"
+    ],
     env: {
       LOG_LEVEL: "INFO",
     },
@@ -13,9 +21,6 @@
       ]
     }
   },
-
-  // No secrets required — the green agent only orchestrates Docker containers and runs tests.
-  // API keys belong to the purple agent.
   config_schema: {
     type: "object",
     properties: {
@@ -40,13 +45,16 @@
     required: [],
     additionalProperties: false,
   },
-
   slots: {
-    purple_agent: { kind: "a2a" },
+    purple_agent: { kind: "a2a" }
   },
-
+  provides: {
+    a2a: { kind: "a2a", endpoint: "endpoint" }
+  },
+  exports: {
+    a2a: "a2a"
+  },
   metadata: {
-    // Must match Agent.required_roles in src/green_agent/agent.py
     participant_roles: ["purple_agent"],
   }
 }
