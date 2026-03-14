@@ -42,7 +42,6 @@
   },
 
   slots: {
-    proxy: { kind: "a2a" },
     purple_agent: { kind: "a2a" },  // outbound: green -> purple
   },
 
