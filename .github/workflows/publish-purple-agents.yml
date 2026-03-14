@@ -6,9 +6,22 @@ on:
       - main
     tags:
       - 'v*.*.*'
+    paths:
+      - 'Dockerfile.*'
+      - 'src/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'requirements*.txt'
   pull_request:
     branches:
       - main
+    paths:
+      - 'Dockerfile.*'
+      - 'src/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'requirements*.txt'
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
