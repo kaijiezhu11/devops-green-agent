@@ -1,5 +1,6 @@
 {
-  manifest_version: "0.1.0",
+  manifest_version: "0.3.0",
+  experimental_features: ["docker"],
   program: {
     image: "ghcr.io/kaijiezhu11/devops-green-agent:latest",
     entrypoint: [
@@ -15,6 +16,9 @@
     env: {
       LOG_LEVEL: "INFO",
     },
+    mounts: [
+      { path: "/var/run/docker.sock", from: "framework.docker" }
+    ],
     network: {
       endpoints: [
         { name: "endpoint", port: 9009 }
