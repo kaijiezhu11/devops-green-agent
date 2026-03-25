@@ -2,6 +2,9 @@
   manifest_version: "0.1.0",
   program: {
     image: "ghcr.io/kaijiezhu11/devops-green-agent:latest",
+    framework: {
+      kind: "docker"
+    },
     entrypoint: [
       "uv",
       "run",
